@@ -113,6 +113,114 @@ def test_stop_with_unparseable_at_is_an_error(cli_env):
     assert db.get_running_entry(conn) is not None
 
 
+def test_add_creates_entry_for_today_by_default(cli_env):
+    result = runner.invoke(
+        app,
+        ["add", "ProjectX", "Task1", "--start", "09:00", "--end", "12:30"],
+        input="y\n2606-151\ny\n\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Added entry" in result.output
+    conn = db.get_connection(cli_env)
+    entries = db.list_entries(conn)
+    assert len(entries) == 1
+    today = datetime.now().date().isoformat()
+    assert entries[0].started_at.startswith(f"{today}T09:00:00")
+    assert entries[0].ended_at.startswith(f"{today}T12:30:00")
+
+
+def test_add_with_date_creates_entry_for_given_day(cli_env):
+    result = runner.invoke(
+        app,
+        [
+            "add", "ProjectX", "Task1",
+            "--start", "09:00", "--end", "12:30", "--date", "2026-08-10",
+        ],
+        input="y\n2606-151\ny\n\n\n",
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    entries = db.list_entries(conn)
+    assert entries[0].started_at == "2026-08-10T09:00:00"
+    assert entries[0].ended_at == "2026-08-10T12:30:00"
+
+
+def test_add_does_not_prompt_for_existing_project_and_subtask(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(app, ["add", "ProjectX", "Task1", "--start", "09:00", "--end", "12:30"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert len(db.list_entries(conn)) == 1
+
+
+def test_add_rejects_start_after_end(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(app, ["add", "ProjectX", "Task1", "--start", "12:30", "--end", "09:00"])
+
+    assert result.exit_code == 1
+    assert "start must be before end" in result.output
+
+
+def test_add_rejects_overlap_with_existing_entry(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0), datetime(2026, 8, 10, 12, 0, 0))
+
+    result = runner.invoke(
+        app,
+        [
+            "add", "ProjectX", "Task1",
+            "--start", "11:00", "--end", "13:00", "--date", "2026-08-10",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "overlaps" in result.output
+
+
+def test_add_invalid_date_is_an_error(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(
+        app,
+        ["add", "ProjectX", "Task1", "--start", "09:00", "--end", "12:00", "--date", "not-a-date"],
+    )
+
+    assert result.exit_code == 1
+    assert "invalid date" in result.output
+
+
+def test_add_does_not_disturb_running_timer(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    running = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+
+    result = runner.invoke(
+        app,
+        [
+            "add", "ProjectX", "Task1",
+            "--start", "09:00", "--end", "10:00", "--date", "2026-08-01",
+        ],
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_running_entry(conn).id == running.id
+
+
 def test_status_shows_running_timer(cli_env):
     runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 

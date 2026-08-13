@@ -296,6 +296,28 @@ def stop_timer(conn: sqlite3.Connection, at: datetime) -> TimeEntry | None:
     return running
 
 
+def add_entry(conn: sqlite3.Connection, subtask_id: int, start: datetime, end: datetime) -> TimeEntry:
+    """Add a complete (already-closed) entry directly, without touching the running timer."""
+    if start >= end:
+        raise EditError("start must be before end")
+
+    conflict = find_overlapping_entry(conn, start, end)
+    if conflict is not None:
+        raise OverlapError(
+            f"{format_dt(start)} -> {format_dt(end)} overlaps entry {conflict.id} "
+            f"({conflict.started_at} -> {conflict.ended_at})"
+        )
+
+    cursor = conn.execute(
+        "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
+        (subtask_id, format_dt(start), format_dt(end)),
+    )
+    conn.commit()
+    return TimeEntry(
+        id=cursor.lastrowid, subtask_id=subtask_id, started_at=format_dt(start), ended_at=format_dt(end)
+    )
+
+
 def delete_entry(conn: sqlite3.Connection, entry_id: int) -> bool:
     cursor = conn.execute("DELETE FROM time_entries WHERE id = ?", (entry_id,))
     conn.commit()

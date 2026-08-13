@@ -191,6 +191,57 @@ def stop(at: str = typer.Option(None, "--at", help="Backdate the stop time, e.g.
 
 
 @app.command()
+def add(
+    project: str,
+    subtask: str,
+    start: str = typer.Option(..., "--start", help="Start time, e.g. '09:00'"),
+    end: str = typer.Option(..., "--end", help="End time, e.g. '17:00'"),
+    entry_date: str = typer.Option(
+        None, "--date", help="Date for the entry, YYYY-MM-DD (default: today)"
+    ),
+) -> None:
+    """Add a complete time entry directly, without starting/stopping a timer."""
+    if entry_date is not None:
+        try:
+            day = datetime.strptime(entry_date, "%Y-%m-%d").date()
+        except ValueError:
+            typer.echo(f"Error: invalid date {entry_date!r} (expected YYYY-MM-DD)")
+            raise typer.Exit(code=1)
+    else:
+        day = datetime.now().date()
+
+    now = datetime.now()
+    try:
+        start_time = parse_time_input(start, now)
+        end_time = parse_time_input(end, now)
+    except TimeParseError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    if entry_date is not None:
+        start_time = start_time.replace(year=day.year, month=day.month, day=day.day)
+        end_time = end_time.replace(year=day.year, month=day.month, day=day.day)
+
+    conn = db.get_connection(db.get_db_path())
+    proj = _get_or_create_project(conn, project)
+    if proj is None:
+        typer.echo("Aborted: project not created.")
+        raise typer.Exit(code=1)
+    sub = _get_or_create_subtask(conn, proj.id, proj.name, subtask)
+    if sub is None:
+        typer.echo("Aborted: subtask not created.")
+        raise typer.Exit(code=1)
+
+    try:
+        entry = db.add_entry(conn, sub.id, start_time, end_time)
+    except (db.EditError, db.OverlapError) as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Added entry {entry.id} on {proj.name}/{sub.name} ({entry.started_at} -> {entry.ended_at})")
+
+
+@app.command()
 def status() -> None:
     """Show the currently running timer, if any."""
     conn = db.get_connection(db.get_db_path())

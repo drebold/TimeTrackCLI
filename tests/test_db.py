@@ -386,6 +386,57 @@ def test_update_entry_editing_own_range_does_not_self_conflict(conn):
     assert updated.ended_at == db.format_dt(datetime(2026, 8, 13, 9, 45, 0))
 
 
+def test_add_entry_creates_closed_entry(conn):
+    subtask = _make_subtask(conn)
+    start = datetime(2026, 8, 13, 9, 0, 0)
+    end = datetime(2026, 8, 13, 12, 30, 0)
+
+    entry = db.add_entry(conn, subtask.id, start, end)
+
+    assert entry.subtask_id == subtask.id
+    assert entry.started_at == db.format_dt(start)
+    assert entry.ended_at == db.format_dt(end)
+    assert db.get_entry(conn, entry.id).ended_at == db.format_dt(end)
+
+
+def test_add_entry_does_not_disturb_running_timer(conn):
+    subtask = _make_subtask(conn)
+    running = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0), datetime(2026, 8, 10, 10, 0, 0))
+
+    assert db.get_running_entry(conn).id == running.id
+
+
+def test_add_entry_rejects_start_after_end(conn):
+    subtask = _make_subtask(conn)
+    with pytest.raises(db.EditError):
+        db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 10, 0, 0), datetime(2026, 8, 13, 9, 0, 0))
+
+
+def test_add_entry_rejects_start_equal_end(conn):
+    subtask = _make_subtask(conn)
+    same = datetime(2026, 8, 13, 9, 0, 0)
+    with pytest.raises(db.EditError):
+        db.add_entry(conn, subtask.id, same, same)
+
+
+def test_add_entry_rejects_overlap_with_existing_entry(conn):
+    subtask = _make_subtask(conn)
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0))
+
+    with pytest.raises(db.OverlapError):
+        db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 30, 0), datetime(2026, 8, 13, 11, 0, 0))
+
+
+def test_add_entry_allows_non_overlapping_entry_same_day(conn):
+    subtask = _make_subtask(conn)
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0))
+
+    entry = db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 11, 0, 0), datetime(2026, 8, 13, 12, 0, 0))
+    assert entry.id is not None
+
+
 def test_delete_entry_removes_it(conn):
     subtask = _make_subtask(conn)
     entry = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
