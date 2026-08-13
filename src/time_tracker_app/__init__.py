@@ -1,2 +1,5 @@
+from time_tracker_app.cli import app
+
+
 def main() -> None:
-    print("Hello from time-tracker-app!")
+    app()
