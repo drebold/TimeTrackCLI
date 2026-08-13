@@ -12,6 +12,8 @@ class Subtask:
     id: int
     project_id: int
     name: str
+    case_task: str | None = None  # Sagsopgave
+    work_type: str | None = None  # Arbejdstype
 
 
 @dataclass
@@ -29,3 +31,12 @@ class TimeEntryView:
     subtask_name: str
     started_at: str
     ended_at: str | None
+
+
+@dataclass
+class WeekReportRow:
+    sagsnr: str  # project name
+    sagsopgave: str | None
+    arbejdstype: str | None
+    beskrivelse: str  # subtask name
+    hours_by_day: list[float]  # 7 entries, Monday..Sunday

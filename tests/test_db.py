@@ -181,3 +181,190 @@ def test_update_entry_rejects_start_equal_end(conn):
 def test_update_entry_missing_id_raises(conn):
     with pytest.raises(db.EditError):
         db.update_entry(conn, 999, end=datetime(2026, 8, 13, 9, 0, 0))
+
+
+def test_create_subtask_stores_case_task_and_work_type(conn):
+    project = db.create_project(conn, "2606-151")
+    subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
+
+    fetched = db.get_subtask_by_name(conn, project.id, "PLC")
+    assert fetched.case_task == "1112"
+    assert fetched.work_type == "1170"
+
+    by_id = db.get_subtask(conn, subtask.id)
+    assert by_id.case_task == "1112"
+    assert by_id.work_type == "1170"
+
+
+def test_create_subtask_case_task_and_work_type_default_to_none(conn):
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    assert subtask.case_task is None
+    assert subtask.work_type is None
+
+
+def test_migrating_old_subtasks_table_adds_missing_columns(tmp_path):
+    db_path = tmp_path / "old.db"
+    conn = db.get_connection(db_path)
+    conn.execute("ALTER TABLE subtasks RENAME TO subtasks_new")
+    conn.execute(
+        """
+        CREATE TABLE subtasks (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL REFERENCES projects(id),
+            name TEXT NOT NULL,
+            UNIQUE (project_id, name)
+        )
+        """
+    )
+    conn.execute("DROP TABLE subtasks_new")
+    conn.commit()
+    conn.close()
+
+    reconnected = db.get_connection(db_path)
+    columns = {row[1] for row in reconnected.execute("PRAGMA table_info(subtasks)").fetchall()}
+    assert "case_task" in columns
+    assert "work_type" in columns
+
+    project = db.create_project(reconnected, "ProjectX")
+    subtask = db.create_subtask(reconnected, project.id, "Task1", case_task="1", work_type="9000")
+    assert subtask.case_task == "1"
+
+
+def test_start_timer_raises_overlap_error_for_backdated_start_inside_existing_entry(conn):
+    subtask = _make_subtask(conn)
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 10, 0, 0))
+
+    with pytest.raises(db.OverlapError):
+        db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 30, 0))
+
+
+def test_start_timer_allows_backdated_start_in_a_gap(conn):
+    subtask = _make_subtask(conn)
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 10, 0, 0))
+
+    entry = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 11, 0, 0))
+    assert entry.started_at == db.format_dt(datetime(2026, 8, 13, 11, 0, 0))
+
+
+def test_stop_timer_raises_overlap_error_when_extending_into_existing_entry(conn):
+    subtask = _make_subtask(conn)
+    running = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    # Directly insert a conflicting closed entry - this state shouldn't be reachable
+    # through the public API (start/edit both guard against it), but stop_timer should
+    # still refuse to create an overlapping range as defense in depth.
+    conn.execute(
+        "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
+        (
+            subtask.id,
+            db.format_dt(datetime(2026, 8, 13, 9, 20, 0)),
+            db.format_dt(datetime(2026, 8, 13, 9, 40, 0)),
+        ),
+    )
+    conn.commit()
+
+    with pytest.raises(db.OverlapError):
+        db.stop_timer(conn, datetime(2026, 8, 13, 9, 30, 0))
+
+    assert db.get_running_entry(conn).id == running.id
+
+
+def test_update_entry_raises_overlap_error_against_running_entry(conn):
+    subtask = _make_subtask(conn)
+    other = db.start_timer(conn, subtask.id, datetime(2020, 1, 1, 7, 0, 0))
+    db.stop_timer(conn, datetime(2020, 1, 1, 7, 30, 0))
+    db.start_timer(conn, subtask.id, datetime(2020, 1, 1, 9, 0, 0))  # still running
+
+    with pytest.raises(db.OverlapError):
+        db.update_entry(
+            conn, other.id, start=datetime(2020, 1, 1, 9, 15, 0), end=datetime(2020, 1, 1, 9, 45, 0)
+        )
+
+
+def test_update_entry_raises_overlap_error(conn):
+    subtask = _make_subtask(conn)
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 9, 30, 0))
+    later = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 11, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 12, 0, 0))
+
+    with pytest.raises(db.OverlapError):
+        db.update_entry(conn, later.id, start=datetime(2026, 8, 13, 9, 15, 0))
+
+
+def test_update_entry_editing_own_range_does_not_self_conflict(conn):
+    subtask = _make_subtask(conn)
+    entry = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 9, 30, 0))
+
+    updated = db.update_entry(conn, entry.id, end=datetime(2026, 8, 13, 9, 45, 0))
+    assert updated.ended_at == db.format_dt(datetime(2026, 8, 13, 9, 45, 0))
+
+
+def test_delete_entry_removes_it(conn):
+    subtask = _make_subtask(conn)
+    entry = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 9, 30, 0))
+
+    assert db.delete_entry(conn, entry.id) is True
+    assert db.get_entry(conn, entry.id) is None
+
+
+def test_delete_entry_missing_returns_false(conn):
+    assert db.delete_entry(conn, 999) is False
+
+
+def test_list_entries_filters_by_date_range(conn):
+    subtask = _make_subtask(conn)
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 10, 9, 30, 0))
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 13, 9, 30, 0))
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 20, 9, 0, 0))
+    db.stop_timer(conn, datetime(2026, 8, 20, 9, 30, 0))
+
+    from datetime import date
+
+    entries = db.list_entries(conn, start_date=date(2026, 8, 13), end_date=date(2026, 8, 13))
+    assert len(entries) == 1
+    assert entries[0].started_at.startswith("2026-08-13")
+
+
+def test_get_week_report_groups_and_sums_hours_by_day(conn):
+    from datetime import date
+
+    project = db.create_project(conn, "2606-151")
+    subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
+
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 10, 8, 0, 0))  # Monday
+    db.stop_timer(conn, datetime(2026, 8, 10, 12, 30, 0))  # 4.5h
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 11, 8, 0, 0))  # Tuesday
+    db.stop_timer(conn, datetime(2026, 8, 11, 16, 0, 0))  # 8h
+
+    monday = date(2026, 8, 10)
+    sunday = date(2026, 8, 16)
+    report = db.get_week_report(conn, monday, sunday)
+
+    assert len(report) == 1
+    row = report[0]
+    assert row.sagsnr == "2606-151"
+    assert row.sagsopgave == "1112"
+    assert row.arbejdstype == "1170"
+    assert row.beskrivelse == "PLC"
+    assert row.hours_by_day[0] == pytest.approx(4.5)
+    assert row.hours_by_day[1] == pytest.approx(8.0)
+    assert row.hours_by_day[2] == 0
+    assert len(row.hours_by_day) == 7
+
+
+def test_get_week_report_excludes_entries_outside_range(conn):
+    from datetime import date
+
+    subtask = _make_subtask(conn)
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 3, 9, 0, 0))  # previous week
+    db.stop_timer(conn, datetime(2026, 8, 3, 10, 0, 0))
+
+    report = db.get_week_report(conn, date(2026, 8, 10), date(2026, 8, 16))
+    assert report == []
