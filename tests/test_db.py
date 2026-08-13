@@ -314,6 +314,89 @@ def test_update_project_rejects_duplicate_name(conn):
         db.update_project(conn, project_b.id, name="ProjectA")
 
 
+def test_list_projects_empty(conn):
+    assert db.list_projects(conn) == []
+
+
+def test_list_projects_returns_all_ordered_by_name(conn):
+    db.create_project(conn, "ProjectB")
+    db.create_project(conn, "ProjectA")
+
+    projects = db.list_projects(conn)
+
+    assert [p.name for p in projects] == ["ProjectA", "ProjectB"]
+
+
+def test_list_subtasks_empty(conn):
+    project = db.create_project(conn, "ProjectX")
+    assert db.list_subtasks(conn, project.id) == []
+
+
+def test_list_subtasks_returns_only_for_given_project(conn):
+    project_a = db.create_project(conn, "ProjectA")
+    project_b = db.create_project(conn, "ProjectB")
+    db.create_subtask(conn, project_a.id, "TaskA")
+    db.create_subtask(conn, project_b.id, "TaskB1")
+    db.create_subtask(conn, project_b.id, "TaskB2")
+
+    subtasks_a = db.list_subtasks(conn, project_a.id)
+    subtasks_b = db.list_subtasks(conn, project_b.id)
+
+    assert [s.name for s in subtasks_a] == ["TaskA"]
+    assert [s.name for s in subtasks_b] == ["TaskB1", "TaskB2"]
+
+
+def test_get_project_subtask_count(conn):
+    project = db.create_project(conn, "ProjectX")
+    assert db.get_project_subtask_count(conn, project.id) == 0
+
+    db.create_subtask(conn, project.id, "Task1")
+    db.create_subtask(conn, project.id, "Task2")
+    assert db.get_project_subtask_count(conn, project.id) == 2
+
+
+def test_get_project_entry_count(conn):
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    assert db.get_project_entry_count(conn, project.id) == 0
+
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0))
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 11, 0, 0), datetime(2026, 8, 13, 12, 0, 0))
+    assert db.get_project_entry_count(conn, project.id) == 2
+
+
+def test_delete_project_removes_project_with_no_subtasks(conn):
+    project = db.create_project(conn, "ProjectX")
+
+    db.delete_project(conn, project.id)
+
+    assert db.get_project(conn, project.id) is None
+
+
+def test_delete_project_raises_has_dependents_error_without_force(conn):
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+
+    with pytest.raises(db.HasDependentsError):
+        db.delete_project(conn, project.id)
+
+    assert db.get_project(conn, project.id) is not None
+
+
+def test_delete_project_cascades_with_force(conn):
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    entry = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0)
+    )
+
+    db.delete_project(conn, project.id, force=True)
+
+    assert db.get_project(conn, project.id) is None
+    assert db.get_subtask(conn, subtask.id) is None
+    assert db.get_entry(conn, entry.id) is None
+
+
 def test_start_timer_raises_overlap_error_for_backdated_start_inside_existing_entry(conn):
     subtask = _make_subtask(conn)
     db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))

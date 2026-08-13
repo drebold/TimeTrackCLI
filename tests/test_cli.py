@@ -596,3 +596,150 @@ def test_project_edit_missing_project_is_an_error(cli_env):
 
     assert result.exit_code == 1
     assert "No project named 'Nonexistent'" in result.output
+
+
+def test_project_list_shows_all_projects(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectB", case_number="2222-222")
+    db.create_project(conn, "ProjectA", case_number="1111-111")
+
+    result = runner.invoke(app, ["project", "list"])
+
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert lines[0].startswith("ProjectA")
+    assert "1111-111" in lines[0]
+    assert lines[1].startswith("ProjectB")
+    assert "2222-222" in lines[1]
+
+
+def test_project_list_empty_message(cli_env):
+    result = runner.invoke(app, ["project", "list"])
+
+    assert result.exit_code == 0
+    assert "No projects yet" in result.output
+
+
+def test_project_list_shows_subtasks_for_given_project(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    db.create_subtask(conn, project.id, "Task1", case_task="1", work_type="9000")
+
+    result = runner.invoke(app, ["project", "list", "ProjectX"])
+
+    assert result.exit_code == 0
+    assert "ProjectX" in result.output
+    assert "2606-151" in result.output
+    assert "Task1" in result.output
+    assert "Sagsopgave: 1" in result.output
+    assert "Arbejdstype: 9000" in result.output
+
+
+def test_project_list_shows_no_subtasks_message(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX", case_number="2606-151")
+
+    result = runner.invoke(app, ["project", "list", "ProjectX"])
+
+    assert result.exit_code == 0
+    assert "(no subtasks)" in result.output
+
+
+def test_project_list_unknown_name_is_error(cli_env):
+    result = runner.invoke(app, ["project", "list", "Nonexistent"])
+
+    assert result.exit_code == 1
+    assert "No project named 'Nonexistent'" in result.output
+
+
+def test_project_create_creates_project(cli_env):
+    result = runner.invoke(app, ["project", "create", "ProjectX", "--case-number", "2606-151"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    project = db.get_project_by_name(conn, "ProjectX")
+    assert project is not None
+    assert project.case_number == "2606-151"
+
+
+def test_project_create_duplicate_name_is_error(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX")
+
+    result = runner.invoke(app, ["project", "create", "ProjectX", "--case-number", "2606-151"])
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_project_create_missing_case_number_is_a_usage_error(cli_env):
+    result = runner.invoke(app, ["project", "create", "ProjectX"])
+
+    assert result.exit_code != 0
+
+
+def test_project_delete_with_no_subtasks_confirms_and_deletes(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX")
+
+    result = runner.invoke(app, ["project", "delete", "ProjectX"], input="y\n")
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "ProjectX") is None
+
+
+def test_project_delete_declined_confirmation_aborts(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX")
+
+    result = runner.invoke(app, ["project", "delete", "ProjectX"], input="n\n")
+
+    assert result.exit_code == 1
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "ProjectX") is not None
+
+
+def test_project_delete_with_yes_skips_confirmation(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX")
+
+    result = runner.invoke(app, ["project", "delete", "ProjectX", "--yes"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "ProjectX") is None
+
+
+def test_project_delete_blocks_when_has_subtasks_without_force(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(app, ["project", "delete", "ProjectX"])
+
+    assert result.exit_code == 1
+    assert "Use --force" in result.output
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "ProjectX") is not None
+
+
+def test_project_delete_cascades_with_force(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0))
+
+    result = runner.invoke(app, ["project", "delete", "ProjectX", "--force", "--yes"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "ProjectX") is None
+    assert db.list_subtasks(conn, project.id) == []
+
+
+def test_project_delete_missing_project_is_error(cli_env):
+    result = runner.invoke(app, ["project", "delete", "Nonexistent"])
+
+    assert result.exit_code == 1
+    assert "No project named 'Nonexistent'" in result.output

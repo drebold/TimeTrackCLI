@@ -24,6 +24,10 @@ class OverlapError(ValueError):
     pass
 
 
+class HasDependentsError(ValueError):
+    pass
+
+
 def get_db_path() -> Path:
     override = os.environ.get("TT_DB_PATH")
     if override:
@@ -124,6 +128,44 @@ def get_project(conn: sqlite3.Connection, project_id: int) -> Project | None:
     return Project(id=row[0], name=row[1], case_number=row[2])
 
 
+def list_projects(conn: sqlite3.Connection) -> list[Project]:
+    rows = conn.execute("SELECT id, name, case_number FROM projects ORDER BY name").fetchall()
+    return [Project(id=row[0], name=row[1], case_number=row[2]) for row in rows]
+
+
+def get_project_subtask_count(conn: sqlite3.Connection, project_id: int) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM subtasks WHERE project_id = ?", (project_id,)
+    ).fetchone()[0]
+
+
+def get_project_entry_count(conn: sqlite3.Connection, project_id: int) -> int:
+    return conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM time_entries
+        JOIN subtasks ON subtasks.id = time_entries.subtask_id
+        WHERE subtasks.project_id = ?
+        """,
+        (project_id,),
+    ).fetchone()[0]
+
+
+def delete_project(conn: sqlite3.Connection, project_id: int, force: bool = False) -> None:
+    subtask_count = get_project_subtask_count(conn, project_id)
+    if subtask_count > 0 and not force:
+        raise HasDependentsError(
+            f"project has {subtask_count} subtask(s); use --force to delete them and all their time entries too"
+        )
+    conn.execute(
+        "DELETE FROM time_entries WHERE subtask_id IN (SELECT id FROM subtasks WHERE project_id = ?)",
+        (project_id,),
+    )
+    conn.execute("DELETE FROM subtasks WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+
+
 def update_project(
     conn: sqlite3.Connection,
     project_id: int,
@@ -191,6 +233,18 @@ def get_subtask(conn: sqlite3.Connection, subtask_id: int) -> Subtask | None:
     if row is None:
         return None
     return Subtask(id=row[0], project_id=row[1], name=row[2], case_task=row[3], work_type=row[4])
+
+
+def list_subtasks(conn: sqlite3.Connection, project_id: int) -> list[Subtask]:
+    rows = conn.execute(
+        "SELECT id, project_id, name, case_task, work_type FROM subtasks "
+        "WHERE project_id = ? ORDER BY name",
+        (project_id,),
+    ).fetchall()
+    return [
+        Subtask(id=row[0], project_id=row[1], name=row[2], case_task=row[3], work_type=row[4])
+        for row in rows
+    ]
 
 
 def get_running_entry(conn: sqlite3.Connection) -> TimeEntry | None:

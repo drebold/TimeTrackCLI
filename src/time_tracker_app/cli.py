@@ -16,6 +16,36 @@ app.add_typer(project_app, name="project", help="Manage project metadata")
 DANISH_WEEKDAYS = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
 
 
+@project_app.command("list")
+def project_list(
+    project: str = typer.Argument(None, help="Show this project's Sagsnr. and subtasks"),
+) -> None:
+    """List all projects, or show one project's Sagsnr. and subtasks."""
+    conn = db.get_connection(db.get_db_path())
+    if project is not None:
+        proj = db.get_project_by_name(conn, project)
+        if proj is None:
+            typer.echo(f"No project named '{project}'")
+            raise typer.Exit(code=1)
+        typer.echo(f"{proj.name}  Sagsnr.: {proj.case_number or '(none)'}")
+        subtasks = db.list_subtasks(conn, proj.id)
+        if not subtasks:
+            typer.echo("  (no subtasks)")
+            return
+        for sub in subtasks:
+            typer.echo(
+                f"  {sub.name}  Sagsopgave: {sub.case_task or '(none)'}  "
+                f"Arbejdstype: {sub.work_type or '(none)'}"
+            )
+        return
+    projects = db.list_projects(conn)
+    if not projects:
+        typer.echo("No projects yet")
+        return
+    for proj in projects:
+        typer.echo(f"{proj.name}  Sagsnr.: {proj.case_number or '(none)'}")
+
+
 def _get_or_create_project(conn, name: str) -> db.Project | None:
     project = db.get_project_by_name(conn, name)
     if project is not None:
@@ -384,3 +414,53 @@ def project_edit(
         raise typer.Exit(code=1)
 
     typer.echo(f"Updated project '{updated.name}' (Sagsnr.: {updated.case_number or '(none)'})")
+
+
+@project_app.command("create")
+def project_create(
+    name: str,
+    case_number: str = typer.Option(..., "--case-number", help="Sagsnr. (case number)"),
+) -> None:
+    """Create a new project."""
+    conn = db.get_connection(db.get_db_path())
+    if db.get_project_by_name(conn, name) is not None:
+        typer.echo(f"Error: project '{name}' already exists")
+        raise typer.Exit(code=1)
+    project = db.create_project(conn, name, case_number=case_number)
+    typer.echo(f"Created project '{project.name}' (Sagsnr.: {project.case_number})")
+
+
+@project_app.command("delete")
+def project_delete(
+    name: str,
+    force: bool = typer.Option(False, "--force", help="Also delete its subtasks and their time entries"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Delete a project."""
+    conn = db.get_connection(db.get_db_path())
+    proj = db.get_project_by_name(conn, name)
+    if proj is None:
+        typer.echo(f"No project named '{name}'")
+        raise typer.Exit(code=1)
+
+    subtask_count = db.get_project_subtask_count(conn, proj.id)
+    entry_count = db.get_project_entry_count(conn, proj.id)
+
+    if subtask_count > 0 and not force:
+        typer.echo(
+            f"Error: project '{name}' has {subtask_count} subtask(s) and {entry_count} "
+            f"time entries. Use --force to delete them all."
+        )
+        raise typer.Exit(code=1)
+
+    prompt = (
+        f"Delete project '{name}', its {subtask_count} subtask(s), and {entry_count} time entries?"
+        if subtask_count > 0
+        else f"Delete project '{name}'?"
+    )
+    if not yes and not typer.confirm(prompt):
+        typer.echo("Aborted")
+        raise typer.Exit(code=1)
+
+    db.delete_project(conn, proj.id, force=force)
+    typer.echo(f"Deleted project '{name}'")
