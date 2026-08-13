@@ -3,6 +3,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from time_tracker_app.models import Project, Subtask
+
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -59,3 +61,39 @@ def format_dt(dt: datetime) -> str:
 
 def parse_dt(value: str) -> datetime:
     return datetime.strptime(value, ISO_FORMAT)
+
+
+def create_project(conn: sqlite3.Connection, name: str) -> Project:
+    cursor = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+    conn.commit()
+    return Project(id=cursor.lastrowid, name=name)
+
+
+def get_project_by_name(conn: sqlite3.Connection, name: str) -> Project | None:
+    row = conn.execute(
+        "SELECT id, name FROM projects WHERE name = ?", (name,)
+    ).fetchone()
+    if row is None:
+        return None
+    return Project(id=row[0], name=row[1])
+
+
+def create_subtask(conn: sqlite3.Connection, project_id: int, name: str) -> Subtask:
+    cursor = conn.execute(
+        "INSERT INTO subtasks (project_id, name) VALUES (?, ?)",
+        (project_id, name),
+    )
+    conn.commit()
+    return Subtask(id=cursor.lastrowid, project_id=project_id, name=name)
+
+
+def get_subtask_by_name(
+    conn: sqlite3.Connection, project_id: int, name: str
+) -> Subtask | None:
+    row = conn.execute(
+        "SELECT id, project_id, name FROM subtasks WHERE project_id = ? AND name = ?",
+        (project_id, name),
+    ).fetchone()
+    if row is None:
+        return None
+    return Subtask(id=row[0], project_id=row[1], name=row[2])
