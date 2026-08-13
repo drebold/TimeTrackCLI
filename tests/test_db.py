@@ -118,6 +118,20 @@ def test_list_entries_most_recent_first_with_names(conn):
     assert entries[0].subtask_name == "Task1"
 
 
+def test_list_entries_breaks_same_second_ties_by_creation_order(conn):
+    subtask = _make_subtask(conn, "ProjectX", "Task1")
+    same_second = datetime(2026, 8, 13, 9, 0, 0)
+    first = db.start_timer(conn, subtask.id, same_second)
+    db.stop_timer(conn, same_second)
+    second = db.start_timer(conn, subtask.id, same_second)
+    db.stop_timer(conn, same_second)
+
+    entries = db.list_entries(conn)
+
+    assert entries[0].id == second.id
+    assert entries[1].id == first.id
+
+
 def test_get_subtask_project_names(conn):
     subtask = _make_subtask(conn, "ProjectX", "Task1")
     project_name, subtask_name = db.get_subtask_project_names(conn, subtask.id)

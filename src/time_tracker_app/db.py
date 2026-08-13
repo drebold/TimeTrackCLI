@@ -157,7 +157,7 @@ def list_entries(conn: sqlite3.Connection) -> list[TimeEntryView]:
         FROM time_entries
         JOIN subtasks ON subtasks.id = time_entries.subtask_id
         JOIN projects ON projects.id = subtasks.project_id
-        ORDER BY time_entries.started_at DESC
+        ORDER BY time_entries.started_at DESC, time_entries.id DESC
         """
     ).fetchall()
     return [
