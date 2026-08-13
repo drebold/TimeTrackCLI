@@ -242,8 +242,8 @@ def week(
             typer.echo(line)
         if copy:
             try:
-                _copy_to_clipboard("\n".join(lines))
-                typer.echo("(copied to clipboard)")
+                _copy_to_clipboard("\n".join(lines[1:]))
+                typer.echo("(copied to clipboard, header excluded)")
             except Exception as e:
                 typer.echo(f"Warning: could not copy to clipboard ({e})")
         return

@@ -392,11 +392,13 @@ def test_week_table_copy_calls_clipboard_with_table_text(cli_env, monkeypatch):
     result = runner.invoke(app, ["week", "--table", "--copy"])
 
     assert result.exit_code == 0
-    assert "(copied to clipboard)" in result.output
+    assert "(copied to clipboard, header excluded)" in result.output
     assert "text" in captured
-    first_line = captured["text"].splitlines()[0]
-    assert first_line.split("\t")[:5] == ["Type", "Sagsnr.", "Sagsopgave", "Arbejdstype", "Beskrivelse"]
-    assert "2606-151" in captured["text"]
+    assert "Type" not in captured["text"]
+    assert "Sagsnr." not in captured["text"]
+    lines = captured["text"].splitlines()
+    assert len(lines) == 1
+    assert lines[0].split("\t")[:5] == ["Sag", "2606-151", "1112", "1170", "PLC"]
 
 
 def test_week_table_copy_reports_failure_gracefully(cli_env, monkeypatch):
