@@ -364,3 +364,48 @@ def test_week_table_matches_finance_report_format(cli_env):
     cells = data_line.split("\t")
     assert cells[:5] == ["Sag", "2606-151", "1112", "1170", "PLC"]
     assert cells[5] == "4,5"
+
+
+def test_week_copy_without_table_is_an_error(cli_env):
+    result = runner.invoke(app, ["week", "--copy"])
+
+    assert result.exit_code == 1
+    assert "requires --table" in result.output
+
+
+def test_week_table_copy_calls_clipboard_with_table_text(cli_env, monkeypatch):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "2606-151")
+    subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
+    monday = datetime.now() - timedelta(days=datetime.now().weekday())
+    monday_start = datetime(monday.year, monday.month, monday.day, 8, 0, 0)
+    db.start_timer(conn, subtask.id, monday_start)
+    db.stop_timer(conn, monday_start + timedelta(hours=4, minutes=30))
+
+    captured = {}
+
+    def fake_copy(text):
+        captured["text"] = text
+
+    monkeypatch.setattr("time_tracker_app.cli._copy_to_clipboard", fake_copy)
+
+    result = runner.invoke(app, ["week", "--table", "--copy"])
+
+    assert result.exit_code == 0
+    assert "(copied to clipboard)" in result.output
+    assert "text" in captured
+    first_line = captured["text"].splitlines()[0]
+    assert first_line.split("\t")[:5] == ["Type", "Sagsnr.", "Sagsopgave", "Arbejdstype", "Beskrivelse"]
+    assert "2606-151" in captured["text"]
+
+
+def test_week_table_copy_reports_failure_gracefully(cli_env, monkeypatch):
+    def fake_copy(text):
+        raise RuntimeError("clipboard unavailable")
+
+    monkeypatch.setattr("time_tracker_app.cli._copy_to_clipboard", fake_copy)
+
+    result = runner.invoke(app, ["week", "--table", "--copy"])
+
+    assert result.exit_code == 0
+    assert "Warning: could not copy to clipboard" in result.output

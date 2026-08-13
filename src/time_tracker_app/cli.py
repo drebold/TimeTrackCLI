@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 from datetime import date, datetime, timedelta
 
 import typer
@@ -72,13 +75,13 @@ def _day_header(d: date) -> str:
     return f"{d.day} {DANISH_WEEKDAYS[d.weekday()]}"
 
 
-def _print_week_table(conn, monday: date, sunday: date) -> None:
+def _week_table_lines(conn, monday: date, sunday: date) -> list[str]:
     report = db.get_week_report(conn, monday, sunday)
     days = [monday + timedelta(days=i) for i in range(7)]
     header = ["Type", "Sagsnr.", "Sagsopgave", "Arbejdstype", "Beskrivelse"] + [
         _day_header(d) for d in days
     ]
-    typer.echo("\t".join(header))
+    lines = ["\t".join(header)]
     for row in report:
         cells = [
             "Sag",
@@ -87,7 +90,39 @@ def _print_week_table(conn, monday: date, sunday: date) -> None:
             row.arbejdstype or "",
             row.beskrivelse,
         ] + [_format_hours(h) for h in row.hours_by_day]
-        typer.echo("\t".join(cells))
+        lines.append("\t".join(cells))
+    return lines
+
+
+def _copy_to_clipboard(text: str) -> None:
+    """Copy `text` to the Windows clipboard via PowerShell's Set-Clipboard.
+
+    Terminals render tab characters as visual spaces on copy, so copying
+    tab-separated CLI output straight from the terminal loses the real tabs
+    Excel needs to split into columns. Routing through the clipboard directly
+    sidesteps that. A temp file (not stdin) carries the text so encoding is
+    unambiguous - the day headers and Beskrivelse/Sagsnr. values can contain
+    Danish characters (e.g. "Lør", "Søn").
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8", newline=""
+    ) as f:
+        f.write(text)
+        temp_path = f.name
+    try:
+        escaped_path = temp_path.replace("'", "''")
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '{escaped_path}')",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    finally:
+        os.unlink(temp_path)
 
 
 @app.command()
@@ -184,8 +219,15 @@ def week(
     table: bool = typer.Option(
         False, "--table", help="Print as a tab-separated table for pasting into the finance app"
     ),
+    copy: bool = typer.Option(
+        False, "--copy", "-c", help="Also copy the table to the clipboard (requires --table)"
+    ),
 ) -> None:
     """List this week's (or a given week's) time entries."""
+    if copy and not table:
+        typer.echo("Error: --copy requires --table")
+        raise typer.Exit(code=1)
+
     conn = db.get_connection(db.get_db_path())
     today_date = datetime.now().date()
     try:
@@ -195,7 +237,15 @@ def week(
         raise typer.Exit(code=1)
 
     if table:
-        _print_week_table(conn, monday, sunday)
+        lines = _week_table_lines(conn, monday, sunday)
+        for line in lines:
+            typer.echo(line)
+        if copy:
+            try:
+                _copy_to_clipboard("\n".join(lines))
+                typer.echo("(copied to clipboard)")
+            except Exception as e:
+                typer.echo(f"Warning: could not copy to clipboard ({e})")
         return
     _print_entries(db.list_entries(conn, start_date=monday, end_date=sunday))
 
