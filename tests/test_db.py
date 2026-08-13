@@ -184,7 +184,7 @@ def test_update_entry_missing_id_raises(conn):
 
 
 def test_create_subtask_stores_case_task_and_work_type(conn):
-    project = db.create_project(conn, "2606-151")
+    project = db.create_project(conn, "2606-151", case_number="2606-151")
     subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
 
     fetched = db.get_subtask_by_name(conn, project.id, "PLC")
@@ -229,6 +229,89 @@ def test_migrating_old_subtasks_table_adds_missing_columns(tmp_path):
     project = db.create_project(reconnected, "ProjectX")
     subtask = db.create_subtask(reconnected, project.id, "Task1", case_task="1", work_type="9000")
     assert subtask.case_task == "1"
+
+
+def test_migrating_old_projects_table_adds_case_number_column_without_backfill(tmp_path):
+    db_path = tmp_path / "old.db"
+    conn = db.get_connection(db_path)
+    conn.execute("ALTER TABLE projects RENAME TO projects_new")
+    conn.execute(
+        """
+        CREATE TABLE projects (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    conn.execute("INSERT INTO projects (id, name) VALUES (1, '2606-151 - Cimbria')")
+    conn.execute("DROP TABLE projects_new")
+    conn.commit()
+    conn.close()
+
+    reconnected = db.get_connection(db_path)
+    columns = {row[1] for row in reconnected.execute("PRAGMA table_info(projects)").fetchall()}
+    assert "case_number" in columns
+
+    project = db.get_project_by_name(reconnected, "2606-151 - Cimbria")
+    assert project.case_number is None
+
+
+def test_create_project_stores_case_number(conn):
+    db.create_project(conn, "PLC Work", case_number="2606-151")
+
+    fetched = db.get_project_by_name(conn, "PLC Work")
+    assert fetched.case_number == "2606-151"
+
+
+def test_get_project_by_id(conn):
+    created = db.create_project(conn, "PLC Work", case_number="2606-151")
+
+    fetched = db.get_project(conn, created.id)
+    assert fetched.name == "PLC Work"
+    assert fetched.case_number == "2606-151"
+
+
+def test_get_project_missing_returns_none(conn):
+    assert db.get_project(conn, 999) is None
+
+
+def test_update_project_changes_name_and_case_number(conn):
+    project = db.create_project(conn, "PLC Work")
+
+    updated = db.update_project(conn, project.id, name="New Name", case_number="1234-567")
+
+    assert updated.name == "New Name"
+    assert updated.case_number == "1234-567"
+    fetched = db.get_project(conn, project.id)
+    assert fetched.name == "New Name"
+    assert fetched.case_number == "1234-567"
+
+
+def test_update_project_partial_update_leaves_other_field_unchanged(conn):
+    project = db.create_project(conn, "PLC Work", case_number="2606-151")
+
+    db.update_project(conn, project.id, case_number="9999-999")
+    fetched = db.get_project(conn, project.id)
+    assert fetched.name == "PLC Work"
+    assert fetched.case_number == "9999-999"
+
+    db.update_project(conn, project.id, name="Renamed")
+    fetched = db.get_project(conn, project.id)
+    assert fetched.name == "Renamed"
+    assert fetched.case_number == "9999-999"
+
+
+def test_update_project_missing_id_raises(conn):
+    with pytest.raises(db.EditError):
+        db.update_project(conn, 999, case_number="2606-151")
+
+
+def test_update_project_rejects_duplicate_name(conn):
+    db.create_project(conn, "ProjectA")
+    project_b = db.create_project(conn, "ProjectB")
+
+    with pytest.raises(db.EditError):
+        db.update_project(conn, project_b.id, name="ProjectA")
 
 
 def test_start_timer_raises_overlap_error_for_backdated_start_inside_existing_entry(conn):
@@ -335,7 +418,7 @@ def test_list_entries_filters_by_date_range(conn):
 def test_get_week_report_groups_and_sums_hours_by_day(conn):
     from datetime import date
 
-    project = db.create_project(conn, "2606-151")
+    project = db.create_project(conn, "2606-151", case_number="2606-151")
     subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
 
     db.start_timer(conn, subtask.id, datetime(2026, 8, 10, 8, 0, 0))  # Monday

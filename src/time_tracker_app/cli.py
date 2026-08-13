@@ -10,6 +10,9 @@ from time_tracker_app.timeparse import TimeParseError, parse_time_input
 
 app = typer.Typer()
 
+project_app = typer.Typer()
+app.add_typer(project_app, name="project", help="Manage project metadata")
+
 DANISH_WEEKDAYS = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
 
 
@@ -19,7 +22,10 @@ def _get_or_create_project(conn, name: str) -> db.Project | None:
         return project
     if not typer.confirm(f"Project '{name}' doesn't exist. Create it?"):
         return None
-    return db.create_project(conn, name)
+    # typer.prompt with no `default` already re-prompts silently on blank
+    # input, so this is guaranteed non-empty by the time it returns.
+    case_number = typer.prompt("Sagsnr. (case number)")
+    return db.create_project(conn, name, case_number=case_number)
 
 
 def _get_or_create_subtask(conn, project_id: int, project_name: str, name: str) -> db.Subtask | None:
@@ -85,7 +91,7 @@ def _week_table_lines(conn, monday: date, sunday: date) -> list[str]:
     for row in report:
         cells = [
             "Sag",
-            row.sagsnr,
+            row.sagsnr or "",
             row.sagsopgave or "",
             row.arbejdstype or "",
             row.beskrivelse,
@@ -301,3 +307,29 @@ def delete(
 
     db.delete_entry(conn, entry_id)
     typer.echo(f"Deleted entry {entry_id}")
+
+
+@project_app.command("edit")
+def project_edit(
+    project: str,
+    case_number: str = typer.Option(None, "--case-number", help="Set the Sagsnr. (case number)"),
+    name: str = typer.Option(None, "--name", help="Rename the project"),
+) -> None:
+    """Edit an existing project's Sagsnr. and/or name."""
+    if case_number is None and name is None:
+        typer.echo("Error: provide --case-number and/or --name")
+        raise typer.Exit(code=1)
+
+    conn = db.get_connection(db.get_db_path())
+    proj = db.get_project_by_name(conn, project)
+    if proj is None:
+        typer.echo(f"No project named '{project}'")
+        raise typer.Exit(code=1)
+
+    try:
+        updated = db.update_project(conn, proj.id, name=name, case_number=case_number)
+    except db.EditError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Updated project '{updated.name}' (Sagsnr.: {updated.case_number or '(none)'})")

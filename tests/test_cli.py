@@ -9,7 +9,7 @@ runner = CliRunner()
 
 
 def test_start_creates_project_and_subtask_when_confirmed(cli_env):
-    result = runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    result = runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 
     assert result.exit_code == 0
     assert "Started timer on ProjectX/Task1" in result.output
@@ -17,6 +17,26 @@ def test_start_creates_project_and_subtask_when_confirmed(cli_env):
     conn = db.get_connection(cli_env)
     running = db.get_running_entry(conn)
     assert running is not None
+
+
+def test_start_prompts_for_required_sagsnr_when_creating_project(cli_env):
+    result = runner.invoke(app, ["start", "PLC Work", "Task1"], input="y\n2606-151\ny\n\n\n")
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    project = db.get_project_by_name(conn, "PLC Work")
+    assert project.case_number == "2606-151"
+
+
+def test_start_reprompts_when_sagsnr_left_blank(cli_env):
+    # typer.prompt with no default re-prompts silently on blank input, so a
+    # blank first answer is skipped rather than accepted as an empty Sagsnr.
+    result = runner.invoke(app, ["start", "PLC Work", "Task1"], input="y\n\n2606-151\ny\n\n\n")
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    project = db.get_project_by_name(conn, "PLC Work")
+    assert project.case_number == "2606-151"
 
 
 def test_start_aborts_when_project_creation_declined(cli_env):
@@ -55,7 +75,7 @@ def test_start_closes_previously_running_timer(cli_env):
 
 
 def test_stop_closes_running_timer(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 
     result = runner.invoke(app, ["stop"])
 
@@ -73,7 +93,7 @@ def test_stop_with_no_timer_running_is_not_an_error(cli_env):
 
 
 def test_stop_with_at_backdates_stop_time(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 
     result = runner.invoke(app, ["stop", "--at", "08:00"])
 
@@ -84,7 +104,7 @@ def test_stop_with_at_backdates_stop_time(cli_env):
 
 
 def test_stop_with_unparseable_at_is_an_error(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 
     result = runner.invoke(app, ["stop", "--at", "not-a-time"])
 
@@ -94,7 +114,7 @@ def test_stop_with_unparseable_at_is_an_error(cli_env):
 
 
 def test_status_shows_running_timer(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
 
     result = runner.invoke(app, ["status"])
 
@@ -117,7 +137,7 @@ def test_list_shows_no_entries_message(cli_env):
 
 
 def test_list_shows_entries_most_recent_first(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
     runner.invoke(app, ["start", "ProjectX", "Task2"], input="y\n\n\n")
 
@@ -132,7 +152,7 @@ def test_list_shows_entries_most_recent_first(cli_env):
 
 
 def test_edit_updates_end_time(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
     conn = db.get_connection(cli_env)
     entry_id = db.list_entries(conn)[0].id
@@ -146,7 +166,7 @@ def test_edit_updates_end_time(cli_env):
 
 
 def test_edit_requires_start_or_end(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     conn = db.get_connection(cli_env)
     entry_id = db.get_running_entry(conn).id
 
@@ -157,7 +177,7 @@ def test_edit_requires_start_or_end(cli_env):
 
 
 def test_edit_rejects_start_after_end(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop", "--at", "09:30"])
     conn = db.get_connection(cli_env)
     entry_id = db.list_entries(conn)[0].id
@@ -169,7 +189,7 @@ def test_edit_rejects_start_after_end(cli_env):
 
 
 def test_edit_unparseable_time_is_an_error(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     conn = db.get_connection(cli_env)
     entry_id = db.get_running_entry(conn).id
 
@@ -180,7 +200,7 @@ def test_edit_unparseable_time_is_an_error(cli_env):
 
 def test_start_creates_subtask_with_case_task_and_work_type(cli_env):
     result = runner.invoke(
-        app, ["start", "2606-151", "PLC"], input="y\ny\n1112\n1170\n"
+        app, ["start", "2606-151", "PLC"], input="y\n2606-151\ny\n1112\n1170\n"
     )
 
     assert result.exit_code == 0
@@ -192,7 +212,7 @@ def test_start_creates_subtask_with_case_task_and_work_type(cli_env):
 
 
 def test_start_at_backdates_start_time(cli_env):
-    result = runner.invoke(app, ["start", "ProjectX", "Task1", "--at", "07:00"], input="y\ny\n\n\n")
+    result = runner.invoke(app, ["start", "ProjectX", "Task1", "--at", "07:00"], input="y\n2606-151\ny\n\n\n")
 
     assert result.exit_code == 0
     conn = db.get_connection(cli_env)
@@ -219,7 +239,7 @@ def test_start_at_rejects_overlap_with_existing_entry(cli_env):
 
 
 def test_delete_removes_entry_when_confirmed(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
     conn = db.get_connection(cli_env)
     entry_id = db.list_entries(conn)[0].id
@@ -233,7 +253,7 @@ def test_delete_removes_entry_when_confirmed(cli_env):
 
 
 def test_delete_aborts_when_declined(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
     conn = db.get_connection(cli_env)
     entry_id = db.list_entries(conn)[0].id
@@ -246,7 +266,7 @@ def test_delete_aborts_when_declined(cli_env):
 
 
 def test_delete_with_yes_flag_skips_confirmation(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
     conn = db.get_connection(cli_env)
     entry_id = db.list_entries(conn)[0].id
@@ -285,7 +305,7 @@ def test_today_lists_only_todays_entries(cli_env):
 
 def test_multiple_same_day_sessions_stay_separate_in_today_and_week_but_sum_in_table(cli_env):
     conn = db.get_connection(cli_env)
-    project = db.create_project(conn, "2606-151")
+    project = db.create_project(conn, "2606-151", case_number="2606-151")
     subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
     today = datetime.now()
     session1_start = today.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -315,7 +335,7 @@ def test_multiple_same_day_sessions_stay_separate_in_today_and_week_but_sum_in_t
 
 
 def test_week_lists_current_week_by_default(cli_env):
-    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
+    runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\n2606-151\ny\n\n\n")
     runner.invoke(app, ["stop"])
 
     result = runner.invoke(app, ["week"])
@@ -348,7 +368,7 @@ def test_week_invalid_arg_is_an_error(cli_env):
 
 def test_week_table_matches_finance_report_format(cli_env):
     conn = db.get_connection(cli_env)
-    project = db.create_project(conn, "2606-151")
+    project = db.create_project(conn, "2606-151", case_number="2606-151")
     subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
     monday = datetime.now() - timedelta(days=datetime.now().weekday())
     monday_start = datetime(monday.year, monday.month, monday.day, 8, 0, 0)
@@ -375,7 +395,7 @@ def test_week_copy_without_table_is_an_error(cli_env):
 
 def test_week_table_copy_calls_clipboard_with_table_text(cli_env, monkeypatch):
     conn = db.get_connection(cli_env)
-    project = db.create_project(conn, "2606-151")
+    project = db.create_project(conn, "2606-151", case_number="2606-151")
     subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
     monday = datetime.now() - timedelta(days=datetime.now().weekday())
     monday_start = datetime(monday.year, monday.month, monday.day, 8, 0, 0)
@@ -411,3 +431,60 @@ def test_week_table_copy_reports_failure_gracefully(cli_env, monkeypatch):
 
     assert result.exit_code == 0
     assert "Warning: could not copy to clipboard" in result.output
+
+
+def test_week_table_uses_case_number_not_project_name_for_sagsnr(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "PLC Work", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
+    monday = datetime.now() - timedelta(days=datetime.now().weekday())
+    monday_start = datetime(monday.year, monday.month, monday.day, 8, 0, 0)
+    db.start_timer(conn, subtask.id, monday_start)
+    db.stop_timer(conn, monday_start + timedelta(hours=2))
+
+    result = runner.invoke(app, ["week", "--table"])
+
+    assert result.exit_code == 0
+    assert "PLC Work" not in result.output
+    data_line = next(line for line in result.output.splitlines() if "2606-151" in line)
+    assert data_line.split("\t")[:2] == ["Sag", "2606-151"]
+
+
+def test_project_edit_sets_case_number(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "PLC Work")
+
+    result = runner.invoke(app, ["project", "edit", "PLC Work", "--case-number", "2606-151"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "PLC Work").case_number == "2606-151"
+
+
+def test_project_edit_renames_project(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "2606-151 - Cimbria")
+
+    result = runner.invoke(app, ["project", "edit", "2606-151 - Cimbria", "--name", "Cimbria"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_project_by_name(conn, "Cimbria") is not None
+    assert db.get_project_by_name(conn, "2606-151 - Cimbria") is None
+
+
+def test_project_edit_requires_at_least_one_option(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "PLC Work")
+
+    result = runner.invoke(app, ["project", "edit", "PLC Work"])
+
+    assert result.exit_code == 1
+    assert "provide --case-number and/or --name" in result.output
+
+
+def test_project_edit_missing_project_is_an_error(cli_env):
+    result = runner.invoke(app, ["project", "edit", "Nonexistent", "--case-number", "2606-151"])
+
+    assert result.exit_code == 1
+    assert "No project named 'Nonexistent'" in result.output

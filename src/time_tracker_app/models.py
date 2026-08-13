@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class Project:
     id: int
     name: str
+    case_number: str | None = None  # Sagsnr.
 
 
 @dataclass
@@ -35,7 +36,7 @@ class TimeEntryView:
 
 @dataclass
 class WeekReportRow:
-    sagsnr: str  # project name
+    sagsnr: str | None  # case number
     sagsopgave: str | None
     arbejdstype: str | None
     beskrivelse: str  # subtask name

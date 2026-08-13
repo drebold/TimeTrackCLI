@@ -44,7 +44,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE
+            name TEXT NOT NULL UNIQUE,
+            case_number TEXT
         )
         """
     )
@@ -71,6 +72,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     _migrate_subtasks_columns(conn)
+    _migrate_projects_columns(conn)
     conn.commit()
 
 
@@ -82,6 +84,12 @@ def _migrate_subtasks_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE subtasks ADD COLUMN work_type TEXT")
 
 
+def _migrate_projects_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    if "case_number" not in existing:
+        conn.execute("ALTER TABLE projects ADD COLUMN case_number TEXT")
+
+
 def format_dt(dt: datetime) -> str:
     return dt.strftime(ISO_FORMAT)
 
@@ -90,19 +98,55 @@ def parse_dt(value: str) -> datetime:
     return datetime.strptime(value, ISO_FORMAT)
 
 
-def create_project(conn: sqlite3.Connection, name: str) -> Project:
-    cursor = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+def create_project(conn: sqlite3.Connection, name: str, case_number: str | None = None) -> Project:
+    cursor = conn.execute(
+        "INSERT INTO projects (name, case_number) VALUES (?, ?)", (name, case_number)
+    )
     conn.commit()
-    return Project(id=cursor.lastrowid, name=name)
+    return Project(id=cursor.lastrowid, name=name, case_number=case_number)
 
 
 def get_project_by_name(conn: sqlite3.Connection, name: str) -> Project | None:
     row = conn.execute(
-        "SELECT id, name FROM projects WHERE name = ?", (name,)
+        "SELECT id, name, case_number FROM projects WHERE name = ?", (name,)
     ).fetchone()
     if row is None:
         return None
-    return Project(id=row[0], name=row[1])
+    return Project(id=row[0], name=row[1], case_number=row[2])
+
+
+def get_project(conn: sqlite3.Connection, project_id: int) -> Project | None:
+    row = conn.execute(
+        "SELECT id, name, case_number FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return Project(id=row[0], name=row[1], case_number=row[2])
+
+
+def update_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    name: str | None = None,
+    case_number: str | None = None,
+) -> Project:
+    project = get_project(conn, project_id)
+    if project is None:
+        raise EditError(f"No project with id {project_id}")
+
+    new_name = name if name is not None else project.name
+    new_case_number = case_number if case_number is not None else project.case_number
+
+    try:
+        conn.execute(
+            "UPDATE projects SET name = ?, case_number = ? WHERE id = ?",
+            (new_name, new_case_number, project_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise EditError(f"A project named '{new_name}' already exists") from None
+
+    return Project(id=project_id, name=new_name, case_number=new_case_number)
 
 
 def create_subtask(
@@ -344,8 +388,8 @@ def update_entry(
 def get_week_report(conn: sqlite3.Connection, monday: date, sunday: date) -> list[WeekReportRow]:
     rows = conn.execute(
         """
-        SELECT projects.name, subtasks.case_task, subtasks.work_type, subtasks.name,
-               time_entries.started_at, time_entries.ended_at
+        SELECT subtasks.id, projects.case_number, subtasks.case_task, subtasks.work_type,
+               subtasks.name, time_entries.started_at, time_entries.ended_at
         FROM time_entries
         JOIN subtasks ON subtasks.id = time_entries.subtask_id
         JOIN projects ON projects.id = subtasks.project_id
@@ -359,23 +403,31 @@ def get_week_report(conn: sqlite3.Connection, monday: date, sunday: date) -> lis
     ).fetchall()
 
     now = datetime.now()
-    rows_by_key: dict[tuple[str, str | None, str | None, str], list[float]] = {}
-    for project_name, case_task, work_type, subtask_name, started_at, ended_at in rows:
+    # Keyed by subtask id (not the display strings) - case_number, unlike a
+    # project's name, isn't guaranteed unique across projects, so it can't
+    # safely stand in as (part of) a grouping key.
+    rows_by_subtask: dict[int, list] = {}
+    for subtask_id, case_number, case_task, work_type, subtask_name, started_at, ended_at in rows:
         started = parse_dt(started_at)
         ended = parse_dt(ended_at) if ended_at is not None else now
         hours = (ended - started).total_seconds() / 3600
-        key = (project_name, case_task, work_type, subtask_name)
-        if key not in rows_by_key:
-            rows_by_key[key] = [0.0] * DAYS_PER_WEEK
-        rows_by_key[key][started.date().weekday()] += hours
+        if subtask_id not in rows_by_subtask:
+            rows_by_subtask[subtask_id] = [
+                case_number,
+                case_task,
+                work_type,
+                subtask_name,
+                [0.0] * DAYS_PER_WEEK,
+            ]
+        rows_by_subtask[subtask_id][4][started.date().weekday()] += hours
 
     return [
         WeekReportRow(
-            sagsnr=project_name,
+            sagsnr=case_number,
             sagsopgave=case_task,
             arbejdstype=work_type,
             beskrivelse=subtask_name,
             hours_by_day=hours_by_day,
         )
-        for (project_name, case_task, work_type, subtask_name), hours_by_day in rows_by_key.items()
+        for case_number, case_task, work_type, subtask_name, hours_by_day in rows_by_subtask.values()
     ]
