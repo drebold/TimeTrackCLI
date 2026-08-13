@@ -283,6 +283,37 @@ def test_today_lists_only_todays_entries(cli_env):
     assert len(lines) == 1
 
 
+def test_multiple_same_day_sessions_stay_separate_in_today_and_week_but_sum_in_table(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "2606-151")
+    subtask = db.create_subtask(conn, project.id, "PLC", case_task="1112", work_type="1170")
+    today = datetime.now()
+    session1_start = today.replace(hour=9, minute=0, second=0, microsecond=0)
+    session2_start = today.replace(hour=11, minute=0, second=0, microsecond=0)
+    db.start_timer(conn, subtask.id, session1_start)
+    db.stop_timer(conn, session1_start + timedelta(minutes=30))  # 0.5h
+    db.start_timer(conn, subtask.id, session2_start)
+    db.stop_timer(conn, session2_start + timedelta(minutes=45))  # 0.75h
+
+    today_lines = [
+        line for line in runner.invoke(app, ["today"]).output.splitlines() if "2606-151" in line
+    ]
+    week_lines = [
+        line for line in runner.invoke(app, ["week"]).output.splitlines() if "2606-151" in line
+    ]
+    table_output = runner.invoke(app, ["week", "--table"]).output
+
+    assert len(today_lines) == 2
+    assert len(week_lines) == 2
+
+    table_lines = [line for line in table_output.splitlines() if "2606-151" in line]
+    assert len(table_lines) == 1
+    cells = table_lines[0].split("\t")
+    assert cells[:5] == ["Sag", "2606-151", "1112", "1170", "PLC"]
+    day_index = today.weekday()
+    assert cells[5 + day_index] == "1,25"
+
+
 def test_week_lists_current_week_by_default(cli_env):
     runner.invoke(app, ["start", "ProjectX", "Task1"], input="y\ny\n\n\n")
     runner.invoke(app, ["stop"])
