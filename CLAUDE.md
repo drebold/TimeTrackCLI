@@ -2,6 +2,13 @@
 
 A time-stamping app for tracking work.
 
+## Update suggestions
+- Nicer UI with richclick
+- Auto completion for projects.
+- A way to customize the output from week --table --copy, for different finance reporting apps. (non-priority)
+- Edit subtask
+- Flag overlap, rather then refuse it. Offer to edit end time of overlapped session?
+
 ## Core concept
 
 - Work is organized into **projects**, each with **subtasks**.
