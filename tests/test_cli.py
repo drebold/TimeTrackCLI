@@ -182,10 +182,12 @@ def test_add_rejects_overlap_with_existing_entry(cli_env):
             "add", "ProjectX", "Task1",
             "--start", "11:00", "--end", "13:00", "--date", "2026-08-10",
         ],
+        input="3\n",
     )
 
     assert result.exit_code == 1
-    assert "overlaps" in result.output
+    assert "Overlaps entry" in result.output
+    assert "Aborted" in result.output
 
 
 def test_add_invalid_date_is_an_error(cli_env):
@@ -332,18 +334,274 @@ def test_start_at_rejects_overlap_with_existing_entry(cli_env):
     conn = db.get_connection(cli_env)
     project = db.create_project(conn, "ProjectX")
     subtask = db.create_subtask(conn, project.id, "Task1")
+    today = datetime.now().date().isoformat()
     conn.execute(
         "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
-        (subtask.id, "2026-08-13T09:00:00", "2026-08-13T10:00:00"),
+        (subtask.id, f"{today}T09:00:00", f"{today}T10:00:00"),
     )
     conn.commit()
 
-    result = runner.invoke(app, ["start", "ProjectX", "Task1", "--at", "09:30"])
+    result = runner.invoke(app, ["start", "ProjectX", "Task1", "--at", "09:30"], input="3\n")
 
     assert result.exit_code == 1
-    assert "overlaps" in result.output
+    assert "Overlaps entry" in result.output
     conn = db.get_connection(cli_env)
     assert db.get_running_entry(conn) is None
+
+
+def test_start_at_overlap_trim_shrinks_existing_entry(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    conflict = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0), datetime(2026, 8, 10, 10, 0, 0)
+    )
+
+    result = runner.invoke(
+        app,
+        ["start", "ProjectX", "Task1", "--at", "2026-08-10 09:30"],
+        input="1\n",
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    running = db.get_running_entry(conn)
+    assert running.started_at == "2026-08-10T09:30:00"
+    trimmed = db.get_entry(conn, conflict.id)
+    assert trimmed.ended_at == "2026-08-10T09:30:00"
+
+
+def test_start_at_overlap_clip_starts_after_conflict(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    conflict = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0), datetime(2026, 8, 10, 10, 0, 0)
+    )
+
+    result = runner.invoke(
+        app,
+        ["start", "ProjectX", "Task1", "--at", "2026-08-10 09:30"],
+        input="2\n",
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    running = db.get_running_entry(conn)
+    assert running.started_at == "2026-08-10T10:00:00"
+    untouched = db.get_entry(conn, conflict.id)
+    assert untouched.ended_at == "2026-08-10T10:00:00"
+
+
+def test_stop_at_overlap_trim_pushes_existing_entry_start_forward(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0))
+    conn.execute(
+        "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
+        (subtask.id, "2026-08-10T10:30:00", "2026-08-10T12:00:00"),
+    )
+    conn.commit()
+
+    result = runner.invoke(app, ["stop", "--at", "2026-08-10 11:00"], input="1\n")
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    entries = db.list_entries(conn)
+    stopped = next(e for e in entries if e.started_at == "2026-08-10T09:00:00")
+    assert stopped.ended_at == "2026-08-10T11:00:00"
+    trimmed = next(e for e in entries if e.id != stopped.id)
+    assert trimmed.started_at == "2026-08-10T11:00:00"
+    assert trimmed.ended_at == "2026-08-10T12:00:00"
+
+
+def test_stop_at_overlap_clip_caps_stop_time_before_conflict(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.start_timer(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0))
+    conn.execute(
+        "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
+        (subtask.id, "2026-08-10T10:30:00", "2026-08-10T12:00:00"),
+    )
+    conn.commit()
+
+    result = runner.invoke(app, ["stop", "--at", "2026-08-10 11:00"], input="2\n")
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    entries = db.list_entries(conn)
+    stopped = next(e for e in entries if e.started_at == "2026-08-10T09:00:00")
+    assert stopped.ended_at == "2026-08-10T10:30:00"
+    other = next(e for e in entries if e.id != stopped.id)
+    assert other.started_at == "2026-08-10T10:30:00"
+    assert other.ended_at == "2026-08-10T12:00:00"
+
+
+def test_edit_overlap_trim_existing_entry(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    entry = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 8, 0, 0), datetime(2026, 8, 10, 9, 0, 0)
+    )
+    conflict = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 10, 0, 0), datetime(2026, 8, 10, 11, 0, 0)
+    )
+
+    result = runner.invoke(
+        app, ["edit", str(entry.id), "--end", "2026-08-10 10:30"], input="1\n"
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    updated_entry = db.get_entry(conn, entry.id)
+    assert updated_entry.ended_at == "2026-08-10T10:30:00"
+    trimmed_conflict = db.get_entry(conn, conflict.id)
+    assert trimmed_conflict.started_at == "2026-08-10T10:30:00"
+    assert trimmed_conflict.ended_at == "2026-08-10T11:00:00"
+
+
+def test_edit_overlap_clip_pulls_end_back_before_conflict(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    entry = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 8, 0, 0), datetime(2026, 8, 10, 9, 0, 0)
+    )
+    conflict = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 10, 0, 0), datetime(2026, 8, 10, 11, 0, 0)
+    )
+
+    result = runner.invoke(
+        app, ["edit", str(entry.id), "--end", "2026-08-10 10:30"], input="2\n"
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    updated_entry = db.get_entry(conn, entry.id)
+    assert updated_entry.ended_at == "2026-08-10T10:00:00"
+    unchanged_conflict = db.get_entry(conn, conflict.id)
+    assert unchanged_conflict.started_at == "2026-08-10T10:00:00"
+    assert unchanged_conflict.ended_at == "2026-08-10T11:00:00"
+
+
+def test_add_overlap_nested_offers_only_cancel(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 10, 9, 0, 0), datetime(2026, 8, 10, 12, 0, 0))
+
+    result = runner.invoke(
+        app,
+        ["add", "ProjectX", "Task1", "--start", "10:00", "--end", "10:30", "--date", "2026-08-10"],
+        input="1\n",
+    )
+
+    assert result.exit_code == 1
+    assert "falls entirely inside entry" in result.output
+    conn = db.get_connection(cli_env)
+    assert len(db.list_entries(conn)) == 1
+
+
+def test_add_overlap_swallow_offers_clip_not_trim(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    conflict = db.add_entry(
+        conn, subtask.id, datetime(2026, 8, 10, 10, 0, 0), datetime(2026, 8, 10, 10, 30, 0)
+    )
+
+    result = runner.invoke(
+        app,
+        ["add", "ProjectX", "Task1", "--start", "09:00", "--end", "12:00", "--date", "2026-08-10"],
+        input="2\n",
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    entries = db.list_entries(conn)
+    new_entry = next(e for e in entries if e.id != conflict.id)
+    assert new_entry.started_at == "2026-08-10T09:00:00"
+    assert new_entry.ended_at == "2026-08-10T10:00:00"
+    unchanged = db.get_entry(conn, conflict.id)
+    assert unchanged.started_at == "2026-08-10T10:00:00"
+    assert unchanged.ended_at == "2026-08-10T10:30:00"
+
+
+def test_add_overlap_swallow_trim_choice_is_ignored_as_cancel(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX", case_number="2606-151")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 10, 10, 0, 0), datetime(2026, 8, 10, 10, 30, 0))
+
+    result = runner.invoke(
+        app,
+        ["add", "ProjectX", "Task1", "--start", "09:00", "--end", "12:00", "--date", "2026-08-10"],
+        input="1\n",
+    )
+
+    assert result.exit_code == 1
+    conn = db.get_connection(cli_env)
+    assert len(db.list_entries(conn)) == 1
+
+
+def test_subtask_edit_sets_fields(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(
+        app, ["subtask", "edit", "ProjectX", "Task1", "--case-task", "1", "--work-type", "9000"]
+    )
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    subtask = db.get_subtask_by_name(conn, project.id, "Task1")
+    assert subtask.case_task == "1"
+    assert subtask.work_type == "9000"
+
+
+def test_subtask_edit_renames(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(app, ["subtask", "edit", "ProjectX", "Task1", "--name", "Renamed"])
+
+    assert result.exit_code == 0
+    conn = db.get_connection(cli_env)
+    assert db.get_subtask_by_name(conn, project.id, "Renamed") is not None
+    assert db.get_subtask_by_name(conn, project.id, "Task1") is None
+
+
+def test_subtask_edit_requires_at_least_one_option(cli_env):
+    conn = db.get_connection(cli_env)
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+
+    result = runner.invoke(app, ["subtask", "edit", "ProjectX", "Task1"])
+
+    assert result.exit_code == 1
+    assert "provide --case-task, --work-type, and/or --name" in result.output
+
+
+def test_subtask_edit_missing_project_is_an_error(cli_env):
+    result = runner.invoke(app, ["subtask", "edit", "Nonexistent", "Task1", "--name", "X"])
+
+    assert result.exit_code == 1
+    assert "No project named 'Nonexistent'" in result.output
+
+
+def test_subtask_edit_missing_subtask_is_an_error(cli_env):
+    conn = db.get_connection(cli_env)
+    db.create_project(conn, "ProjectX")
+
+    result = runner.invoke(app, ["subtask", "edit", "ProjectX", "Nonexistent", "--name", "X"])
+
+    assert result.exit_code == 1
+    assert "No subtask named 'Nonexistent' under 'ProjectX'" in result.output
 
 
 def test_delete_removes_entry_when_confirmed(cli_env):

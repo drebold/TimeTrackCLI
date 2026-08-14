@@ -397,6 +397,92 @@ def test_delete_project_cascades_with_force(conn):
     assert db.get_entry(conn, entry.id) is None
 
 
+def test_update_subtask_changes_fields(conn):
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1")
+
+    updated = db.update_subtask(conn, subtask.id, name="Renamed", case_task="1", work_type="9000")
+
+    assert updated.name == "Renamed"
+    assert updated.case_task == "1"
+    assert updated.work_type == "9000"
+    fetched = db.get_subtask(conn, subtask.id)
+    assert fetched.name == "Renamed"
+    assert fetched.case_task == "1"
+    assert fetched.work_type == "9000"
+
+
+def test_update_subtask_partial_update_leaves_other_fields_unchanged(conn):
+    project = db.create_project(conn, "ProjectX")
+    subtask = db.create_subtask(conn, project.id, "Task1", case_task="1", work_type="9000")
+
+    db.update_subtask(conn, subtask.id, work_type="9998")
+
+    fetched = db.get_subtask(conn, subtask.id)
+    assert fetched.name == "Task1"
+    assert fetched.case_task == "1"
+    assert fetched.work_type == "9998"
+
+
+def test_update_subtask_missing_id_raises(conn):
+    with pytest.raises(db.EditError):
+        db.update_subtask(conn, 999, name="X")
+
+
+def test_update_subtask_rejects_duplicate_name_within_same_project(conn):
+    project = db.create_project(conn, "ProjectX")
+    db.create_subtask(conn, project.id, "Task1")
+    task2 = db.create_subtask(conn, project.id, "Task2")
+
+    with pytest.raises(db.EditError):
+        db.update_subtask(conn, task2.id, name="Task1")
+
+
+def test_update_subtask_same_name_allowed_across_different_projects(conn):
+    project_a = db.create_project(conn, "ProjectA")
+    project_b = db.create_project(conn, "ProjectB")
+    db.create_subtask(conn, project_a.id, "Task1")
+    task_b = db.create_subtask(conn, project_b.id, "Other")
+
+    updated = db.update_subtask(conn, task_b.id, name="Task1")
+    assert updated.name == "Task1"
+
+
+def test_overlap_error_carries_conflict_and_requested_range(conn):
+    subtask = _make_subtask(conn)
+    db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0), datetime(2026, 8, 13, 10, 0, 0))
+
+    with pytest.raises(db.OverlapError) as exc_info:
+        db.add_entry(conn, subtask.id, datetime(2026, 8, 13, 9, 30, 0), datetime(2026, 8, 13, 11, 0, 0))
+
+    error = exc_info.value
+    assert error.conflict.started_at == "2026-08-13T09:00:00"
+    assert error.conflict.ended_at == "2026-08-13T10:00:00"
+    assert error.requested_start == datetime(2026, 8, 13, 9, 30, 0)
+    assert error.requested_end == datetime(2026, 8, 13, 11, 0, 0)
+
+
+def test_update_entry_extra_exclude_entry_id_ignores_that_entry_too(conn):
+    subtask = _make_subtask(conn)
+    running = db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))
+    # Inserted directly - db.add_entry would itself refuse this (it overlaps
+    # the still-open running entry, whose effective end is "now").
+    cursor = conn.execute(
+        "INSERT INTO time_entries (subtask_id, started_at, ended_at) VALUES (?, ?, ?)",
+        (subtask.id, "2026-08-13T12:00:00", "2026-08-13T13:00:00"),
+    )
+    conn.commit()
+    other_id = cursor.lastrowid
+
+    # Without the extra exclusion, this would spuriously conflict with the
+    # still-open running entry (whose effective end is "now", far past 11:00).
+    updated = db.update_entry(
+        conn, other_id, start=datetime(2026, 8, 13, 11, 0, 0), extra_exclude_entry_id=running.id
+    )
+
+    assert updated.started_at == "2026-08-13T11:00:00"
+
+
 def test_start_timer_raises_overlap_error_for_backdated_start_inside_existing_entry(conn):
     subtask = _make_subtask(conn)
     db.start_timer(conn, subtask.id, datetime(2026, 8, 13, 9, 0, 0))

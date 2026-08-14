@@ -13,6 +13,9 @@ app = typer.Typer()
 project_app = typer.Typer()
 app.add_typer(project_app, name="project", help="Manage project metadata")
 
+subtask_app = typer.Typer()
+app.add_typer(subtask_app, name="subtask", help="Manage subtask metadata")
+
 DANISH_WEEKDAYS = ["Man", "Tir", "Ons", "Tor", "Fre", "Lør", "Søn"]
 
 
@@ -73,6 +76,92 @@ def _get_or_create_subtask(conn, project_id: int, project_name: str, name: str) 
         case_task=case_task or None,
         work_type=work_type or None,
     )
+
+
+def _resolve_overlap(
+    conn, error: db.OverlapError, subject_entry_id: int | None = None
+) -> tuple[datetime, datetime | None] | None:
+    """Interactively resolve an overlap raised by start/stop/add/edit.
+
+    Returns the (start, end) to retry the original action with, or None if the
+    user cancelled. Trimming the conflicting entry returns the ORIGINAL
+    requested (start, end) unchanged, since the conflict should be gone on
+    retry; clipping returns an ADJUSTED (start, end) with the conflict left
+    untouched.
+
+    `subject_entry_id` is the id of the entry already in the table that this
+    action concerns (the running entry being stopped, or the entry being
+    edited) - it still holds its old, not-yet-updated values at this point, so
+    trimming the conflict must also exclude it from the overlap re-check or it
+    can spuriously conflict with itself. None for start/add, which don't have
+    an existing row yet.
+    """
+    conflict = error.conflict
+    requested_start = error.requested_start
+    requested_end = error.requested_end
+    conflict_start = db.parse_dt(conflict.started_at)
+    conflict_end = db.parse_dt(conflict.ended_at) if conflict.ended_at is not None else datetime.now()
+
+    typer.echo(
+        f"Overlaps entry {conflict.id} ({conflict.started_at} -> {conflict.ended_at or 'running'})"
+    )
+
+    nested = (
+        requested_end is not None
+        and conflict_start <= requested_start
+        and requested_end <= conflict_end
+    )
+    swallow = (
+        requested_end is not None
+        and requested_start <= conflict_start
+        and requested_end >= conflict_end
+    )
+    new_starts_inside_conflict = conflict_start <= requested_start < conflict_end
+
+    trim_kwargs: dict[str, datetime] | None = None
+    clip_start, clip_end = requested_start, requested_end
+    options: dict[str, str] = {}
+
+    if nested:
+        typer.echo(
+            f"Your requested time falls entirely inside entry {conflict.id} - there's no way to "
+            f"trim or clip around it. Edit or delete entry {conflict.id} first if you want to replace it."
+        )
+    elif swallow:
+        typer.echo(
+            f"Your requested time fully covers entry {conflict.id} - trimming isn't possible "
+            f"without invalidating it. Use `tt delete {conflict.id}` first if you want to replace it."
+        )
+        clip_end = conflict_start
+        options["2"] = f"End your entry at {db.format_dt(conflict_start)} instead"
+    elif new_starts_inside_conflict:
+        trim_kwargs = {"end": requested_start}
+        clip_start = conflict_end
+        options["1"] = f"Trim entry {conflict.id} to end at {db.format_dt(requested_start)}"
+        options["2"] = f"Start your entry at {db.format_dt(conflict_end)} instead"
+    else:
+        trim_kwargs = {"start": requested_end}
+        clip_end = conflict_start
+        options["1"] = f"Trim entry {conflict.id} to start at {db.format_dt(requested_end)}"
+        options["2"] = f"End your entry at {db.format_dt(conflict_start)} instead"
+
+    options["3"] = "Cancel"
+    for key, desc in options.items():
+        typer.echo(f"  [{key}] {desc}")
+    choice = typer.prompt("Choice", default="3")
+
+    if choice == "1" and trim_kwargs is not None:
+        try:
+            db.update_entry(
+                conn, conflict.id, extra_exclude_entry_id=subject_entry_id, **trim_kwargs
+            )
+        except (db.EditError, db.OverlapError) as e:
+            typer.echo(f"Error trimming entry {conflict.id}: {e}")
+            return None
+        return requested_start, requested_end
+    if choice == "2" and "2" in options:
+        return clip_start, clip_end
+    return None
 
 
 def _print_entries(entries: list[db.TimeEntryView]) -> None:
@@ -188,11 +277,16 @@ def start(
         typer.echo("Aborted: subtask not created.")
         raise typer.Exit(code=1)
 
-    try:
-        db.start_timer(conn, sub.id, start_time)
-    except db.OverlapError as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+    while True:
+        try:
+            db.start_timer(conn, sub.id, start_time)
+            break
+        except db.OverlapError as e:
+            resolved = _resolve_overlap(conn, e)
+            if resolved is None:
+                typer.echo("Aborted")
+                raise typer.Exit(code=1)
+            start_time, _ = resolved
     typer.echo(f"Started timer on {proj.name}/{sub.name}")
 
 
@@ -209,11 +303,17 @@ def stop(at: str = typer.Option(None, "--at", help="Backdate the stop time, e.g.
             raise typer.Exit(code=1)
     else:
         stop_time = now
-    try:
-        entry = db.stop_timer(conn, stop_time)
-    except db.OverlapError as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+    running = db.get_running_entry(conn)
+    while True:
+        try:
+            entry = db.stop_timer(conn, stop_time)
+            break
+        except db.OverlapError as e:
+            resolved = _resolve_overlap(conn, e, subject_entry_id=running.id if running else None)
+            if resolved is None:
+                typer.echo("Aborted")
+                raise typer.Exit(code=1)
+            _, stop_time = resolved
     if entry is None:
         typer.echo("No timer running")
         return
@@ -262,11 +362,19 @@ def add(
         typer.echo("Aborted: subtask not created.")
         raise typer.Exit(code=1)
 
-    try:
-        entry = db.add_entry(conn, sub.id, start_time, end_time)
-    except (db.EditError, db.OverlapError) as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+    while True:
+        try:
+            entry = db.add_entry(conn, sub.id, start_time, end_time)
+            break
+        except db.EditError as e:
+            typer.echo(f"Error: {e}")
+            raise typer.Exit(code=1)
+        except db.OverlapError as e:
+            resolved = _resolve_overlap(conn, e)
+            if resolved is None:
+                typer.echo("Aborted")
+                raise typer.Exit(code=1)
+            start_time, end_time = resolved
 
     typer.echo(f"Added entry {entry.id} on {proj.name}/{sub.name} ({entry.started_at} -> {entry.ended_at})")
 
@@ -357,11 +465,19 @@ def edit(
         typer.echo(f"Error: {e}")
         raise typer.Exit(code=1)
 
-    try:
-        updated = db.update_entry(conn, entry_id, start=start_dt, end=end_dt)
-    except (db.EditError, db.OverlapError) as e:
-        typer.echo(f"Error: {e}")
-        raise typer.Exit(code=1)
+    while True:
+        try:
+            updated = db.update_entry(conn, entry_id, start=start_dt, end=end_dt)
+            break
+        except db.EditError as e:
+            typer.echo(f"Error: {e}")
+            raise typer.Exit(code=1)
+        except db.OverlapError as e:
+            resolved = _resolve_overlap(conn, e, subject_entry_id=entry_id)
+            if resolved is None:
+                typer.echo("Aborted")
+                raise typer.Exit(code=1)
+            start_dt, end_dt = resolved
 
     typer.echo(f"Updated entry {updated.id}")
 
@@ -464,3 +580,38 @@ def project_delete(
 
     db.delete_project(conn, proj.id, force=force)
     typer.echo(f"Deleted project '{name}'")
+
+
+@subtask_app.command("edit")
+def subtask_edit(
+    project: str,
+    subtask: str,
+    case_task: str = typer.Option(None, "--case-task", help="Set the Sagsopgave (task no.)"),
+    work_type: str = typer.Option(None, "--work-type", help="Set the Arbejdstype (work-type code)"),
+    name: str = typer.Option(None, "--name", help="Rename the subtask"),
+) -> None:
+    """Edit an existing subtask's Sagsopgave, Arbejdstype, and/or name."""
+    if case_task is None and work_type is None and name is None:
+        typer.echo("Error: provide --case-task, --work-type, and/or --name")
+        raise typer.Exit(code=1)
+
+    conn = db.get_connection(db.get_db_path())
+    proj = db.get_project_by_name(conn, project)
+    if proj is None:
+        typer.echo(f"No project named '{project}'")
+        raise typer.Exit(code=1)
+    sub = db.get_subtask_by_name(conn, proj.id, subtask)
+    if sub is None:
+        typer.echo(f"No subtask named '{subtask}' under '{project}'")
+        raise typer.Exit(code=1)
+
+    try:
+        updated = db.update_subtask(conn, sub.id, name=name, case_task=case_task, work_type=work_type)
+    except db.EditError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Updated subtask '{updated.name}' (Sagsopgave: {updated.case_task or '(none)'}, "
+        f"Arbejdstype: {updated.work_type or '(none)'})"
+    )

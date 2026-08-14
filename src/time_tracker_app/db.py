@@ -21,7 +21,17 @@ class EditError(ValueError):
 
 
 class OverlapError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        conflict: "TimeEntry",
+        requested_start: datetime,
+        requested_end: datetime | None,
+    ) -> None:
+        super().__init__(message)
+        self.conflict = conflict
+        self.requested_start = requested_start
+        self.requested_end = requested_end
 
 
 class HasDependentsError(ValueError):
@@ -247,6 +257,39 @@ def list_subtasks(conn: sqlite3.Connection, project_id: int) -> list[Subtask]:
     ]
 
 
+def update_subtask(
+    conn: sqlite3.Connection,
+    subtask_id: int,
+    name: str | None = None,
+    case_task: str | None = None,
+    work_type: str | None = None,
+) -> Subtask:
+    subtask = get_subtask(conn, subtask_id)
+    if subtask is None:
+        raise EditError(f"No subtask with id {subtask_id}")
+
+    new_name = name if name is not None else subtask.name
+    new_case_task = case_task if case_task is not None else subtask.case_task
+    new_work_type = work_type if work_type is not None else subtask.work_type
+
+    try:
+        conn.execute(
+            "UPDATE subtasks SET name = ?, case_task = ?, work_type = ? WHERE id = ?",
+            (new_name, new_case_task, new_work_type, subtask_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise EditError(f"A subtask named '{new_name}' already exists under this project") from None
+
+    return Subtask(
+        id=subtask_id,
+        project_id=subtask.project_id,
+        name=new_name,
+        case_task=new_case_task,
+        work_type=new_work_type,
+    )
+
+
 def get_running_entry(conn: sqlite3.Connection) -> TimeEntry | None:
     row = conn.execute(
         "SELECT id, subtask_id, started_at, ended_at FROM time_entries "
@@ -271,7 +314,7 @@ def find_overlapping_entry(
     conn: sqlite3.Connection,
     start: datetime,
     end: datetime | None,
-    exclude_entry_id: int | None = None,
+    exclude_entry_id: int | set[int] | None = None,
 ) -> TimeEntry | None:
     """Find an existing entry on `start`'s calendar day that conflicts with [start, end).
 
@@ -282,7 +325,15 @@ def find_overlapping_entry(
     If `end` is given (the candidate has a fixed range) and an existing entry is itself
     still open/running, that entry is treated as running until now() - it has already
     consumed that time even though its final stop time isn't known yet.
+
+    `exclude_entry_id` may be a single id or a set of ids to ignore (e.g. when trimming
+    a conflicting entry as part of resolving an overlap, both the conflict's own id and
+    the id of the entry currently being created/closed/edited need excluding - the
+    latter still holds its old, not-yet-updated values in the table at that point).
     """
+    exclude_ids = (
+        {exclude_entry_id} if isinstance(exclude_entry_id, int) else (exclude_entry_id or set())
+    )
     day = start.date()
     day_start = format_dt(datetime.combine(day, time.min))
     day_end = format_dt(datetime.combine(day, time.max))
@@ -292,7 +343,7 @@ def find_overlapping_entry(
         (day_start, day_end),
     ).fetchall()
     for row in rows:
-        if exclude_entry_id is not None and row[0] == exclude_entry_id:
+        if row[0] in exclude_ids:
             continue
         existing_start = parse_dt(row[2])
         existing_end = parse_dt(row[3]) if row[3] is not None else None
@@ -311,7 +362,10 @@ def start_timer(conn: sqlite3.Connection, subtask_id: int, at: datetime) -> Time
     if conflict is not None:
         raise OverlapError(
             f"{format_dt(at)} overlaps entry {conflict.id} "
-            f"({conflict.started_at} -> {conflict.ended_at})"
+            f"({conflict.started_at} -> {conflict.ended_at})",
+            conflict=conflict,
+            requested_start=at,
+            requested_end=None,
         )
     running = get_running_entry(conn)
     if running is not None:
@@ -339,7 +393,10 @@ def stop_timer(conn: sqlite3.Connection, at: datetime) -> TimeEntry | None:
     if conflict is not None:
         raise OverlapError(
             f"stopping at {format_dt(at)} would overlap entry {conflict.id} "
-            f"({conflict.started_at} -> {conflict.ended_at})"
+            f"({conflict.started_at} -> {conflict.ended_at})",
+            conflict=conflict,
+            requested_start=parse_dt(running.started_at),
+            requested_end=at,
         )
     conn.execute(
         "UPDATE time_entries SET ended_at = ? WHERE id = ?",
@@ -359,7 +416,10 @@ def add_entry(conn: sqlite3.Connection, subtask_id: int, start: datetime, end: d
     if conflict is not None:
         raise OverlapError(
             f"{format_dt(start)} -> {format_dt(end)} overlaps entry {conflict.id} "
-            f"({conflict.started_at} -> {conflict.ended_at})"
+            f"({conflict.started_at} -> {conflict.ended_at})",
+            conflict=conflict,
+            requested_start=start,
+            requested_end=end,
         )
 
     cursor = conn.execute(
@@ -430,7 +490,13 @@ def update_entry(
     entry_id: int,
     start: datetime | None = None,
     end: datetime | None = None,
+    extra_exclude_entry_id: int | None = None,
 ) -> TimeEntry:
+    """`extra_exclude_entry_id` additionally ignores that entry when checking for
+    overlap - used when trimming this entry as part of resolving an overlap for
+    some OTHER entry that's mid-creation/close/edit and still holds its old,
+    not-yet-written values in the table (so it would otherwise spuriously conflict).
+    """
     entry = get_entry(conn, entry_id)
     if entry is None:
         raise EditError(f"No entry with id {entry_id}")
@@ -441,16 +507,22 @@ def update_entry(
     if new_end is not None and parse_dt(new_start) >= parse_dt(new_end):
         raise EditError("start must be before end")
 
+    exclude_ids = {entry_id}
+    if extra_exclude_entry_id is not None:
+        exclude_ids.add(extra_exclude_entry_id)
     conflict = find_overlapping_entry(
         conn,
         parse_dt(new_start),
         parse_dt(new_end) if new_end is not None else None,
-        exclude_entry_id=entry_id,
+        exclude_entry_id=exclude_ids,
     )
     if conflict is not None:
         raise OverlapError(
             f"{new_start} -> {new_end} overlaps entry {conflict.id} "
-            f"({conflict.started_at} -> {conflict.ended_at})"
+            f"({conflict.started_at} -> {conflict.ended_at})",
+            conflict=conflict,
+            requested_start=parse_dt(new_start),
+            requested_end=parse_dt(new_end) if new_end is not None else None,
         )
 
     conn.execute(
