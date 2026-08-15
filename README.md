@@ -25,6 +25,29 @@ Data lives in `~/.timetracker/timetracker.db`, independent of this project
 folder. Override the location with the `TT_DB_PATH` environment variable
 (used for tests and manual testing so real data is never touched).
 
+## Interactive UI
+
+```powershell
+tt tui
+```
+
+A [Textual](https://textual.textualize.io/) terminal UI covering everything
+the CLI does, across three tabs:
+
+- **Timer** — live running-timer status, start/stop, an "Add entry..." dialog
+  for backdated entries, and a list of entries (Today/This week/All) you can
+  edit (`e`) or delete (`d`).
+- **Projects** — project list next to the selected project's subtasks; create,
+  rename, and delete projects (cascade-deletes subtasks/entries with
+  confirmation), and rename subtasks.
+- **Week** — the same finance-report table as `week --table`, with Prev/Next
+  week navigation and a "Copy to clipboard" button.
+
+Starting a timer or adding an entry lets you create a new project/subtask
+inline instead of picking an existing one, same as the CLI's prompts.
+Keybindings: `a` add entry, `d` delete selected, `e` edit selected, `r`
+refresh, `q` quit.
+
 ## Commands
 
 **Timer**
@@ -34,6 +57,7 @@ folder. Override the location with the `TT_DB_PATH` environment variable
 | `tt stop [--at TIME]` | Stop the running timer. No-op (not an error) if nothing's running. |
 | `tt status` | Show the currently running timer and elapsed time. |
 | `tt add <project> <subtask> --start TIME --end TIME [--date DATE]` | Add a complete entry directly, without starting/stopping a timer. `--date` defaults to today (`YYYY-MM-DD`). Doesn't touch a running timer. |
+| `tt tui` | Launch the interactive terminal UI (see [Interactive UI](#interactive-ui) above). |
 
 **Viewing entries**
 | Command | What it does |
