@@ -1,0 +1,147 @@
+Screen {
+    layout: vertical;
+}
+
+TabPane {
+    layout: vertical;
+    height: 1fr;
+}
+
+/* -- Timer tab --------------------------------------------------------- */
+
+#status-label {
+    height: 3;
+    background: $boost;
+    padding: 0 1;
+    content-align: left middle;
+}
+
+#start-panel, #stop-panel {
+    height: 3;
+    padding: 0 1;
+}
+
+#start-panel {
+    layout: horizontal;
+}
+
+#start-panel Select {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#start-panel Button {
+    width: auto;
+    margin-right: 1;
+}
+
+#stop-panel {
+    align: left middle;
+}
+
+#view-switch-row {
+    height: 3;
+    layout: horizontal;
+    align: left middle;
+    padding: 0 1;
+}
+
+#view-switch {
+    layout: horizontal;
+    width: auto;
+}
+
+#view-switch RadioButton {
+    margin-right: 2;
+}
+
+#add-entry-btn {
+    margin-left: 4;
+}
+
+#entries-table, #projects-table, #subtasks-table, #week-table {
+    height: 1fr;
+}
+
+#error-label, #projects-error-label, #week-error {
+    height: auto;
+    color: $error;
+    padding: 0 1;
+}
+
+/* -- Projects tab -------------------------------------------------------- */
+
+#projects-layout {
+    height: 1fr;
+}
+
+#projects-pane, #subtasks-pane {
+    width: 1fr;
+    height: 1fr;
+    padding: 0 1;
+}
+
+#projects-label, #subtasks-label {
+    height: 1;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#projects-buttons, #subtasks-buttons {
+    height: 3;
+    align: left middle;
+}
+
+#projects-buttons Button, #subtasks-buttons Button {
+    margin-right: 1;
+}
+
+/* -- Week tab -------------------------------------------------------------- */
+
+#week-nav {
+    height: 3;
+    align: left middle;
+    padding: 0 1;
+}
+
+#week-nav Button {
+    margin-right: 1;
+}
+
+#week-label {
+    width: 1fr;
+    content-align: center middle;
+    text-style: bold;
+}
+
+/* -- Modals -------------------------------------------------------------- */
+
+ModalScreen {
+    align: center middle;
+}
+
+#dialog {
+    width: 64;
+    height: auto;
+    max-height: 90%;
+    background: $panel;
+    border: thick $primary;
+    padding: 1 2;
+}
+
+#dialog-message {
+    padding-bottom: 1;
+}
+
+#dialog Input, #dialog Select {
+    margin-bottom: 1;
+}
+
+#dialog-buttons {
+    height: auto;
+    align: right middle;
+}
+
+#dialog-buttons Button {
+    margin-left: 1;
+}

@@ -380,6 +380,14 @@ def add(
 
 
 @app.command()
+def tui() -> None:
+    """Launch the interactive terminal UI."""
+    from time_tracker_app.tui import TimeTrackerTUI
+
+    TimeTrackerTUI().run()
+
+
+@app.command()
 def status() -> None:
     """Show the currently running timer, if any."""
     conn = db.get_connection(db.get_db_path())
