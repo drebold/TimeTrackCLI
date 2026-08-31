@@ -268,12 +268,13 @@ class EditEntryScreen(ModalScreen[tuple[str, str] | None]):
         ended = db.parse_dt(self.entry.ended_at) if self.entry.ended_at else None
         with Vertical(id="dialog"):
             yield Label(f"Edit entry {self.entry.id}", id="dialog-message")
-            yield Input(value=started.strftime("%Y-%m-%d %H:%M"), id="start-input")
-            yield Input(
-                value=ended.strftime("%Y-%m-%d %H:%M") if ended else "",
-                placeholder="(running)",
-                id="end-input",
-            )
+            with Horizontal(id="entry-time-row"):
+                yield Input(value=started.strftime("%Y-%m-%d %H:%M"), id="start-input")
+                yield Input(
+                    value=ended.strftime("%Y-%m-%d %H:%M") if ended else "",
+                    placeholder="(running)",
+                    id="end-input",
+                )
             with Horizontal(id="dialog-buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Save", variant="success", id="save")
@@ -306,8 +307,9 @@ class AddEntryScreen(ModalScreen[bool]):
             yield Select([], prompt="Project", id="entry-project-select")
             yield Select([], prompt="Subtask", id="entry-subtask-select", disabled=True)
             yield Input(placeholder="Date YYYY-MM-DD (default: today)", id="entry-date-input")
-            yield Input(placeholder="Start, e.g. 09:00", id="entry-start-input")
-            yield Input(placeholder="End, e.g. 17:00", id="entry-end-input")
+            with Horizontal(id="entry-time-row"):
+                yield Input(placeholder="Start, e.g. 09:00", id="entry-start-input")
+                yield Input(placeholder="End, e.g. 17:00", id="entry-end-input")
             yield Label("", id="entry-error-label")
             with Horizontal(id="dialog-buttons"):
                 yield Button("Cancel", id="cancel")

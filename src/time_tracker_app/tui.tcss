@@ -138,6 +138,18 @@ ModalScreen {
     margin-bottom: 1;
 }
 
+#entry-time-row {
+    height: auto;
+}
+
+#entry-time-row Input {
+    width: 1fr;
+}
+
+#entry-time-row Input:first-child {
+    margin-right: 1;
+}
+
 #dialog-buttons {
     height: auto;
     align: right middle;
