@@ -127,6 +127,7 @@ ModalScreen {
     background: $panel;
     border: thick $primary;
     padding: 1 2;
+    overflow-y: auto;
 }
 
 #dialog-message {

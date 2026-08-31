@@ -48,6 +48,11 @@ def _fmt_duration(td: timedelta) -> str:
 
 
 class ConfirmScreen(ModalScreen[bool]):
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def __init__(self, message: str) -> None:
         super().__init__()
         self.message = message
@@ -69,6 +74,11 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class NewProjectScreen(ModalScreen[db.Project | None]):
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("New project", id="dialog-message")
@@ -100,6 +110,11 @@ class NewProjectScreen(ModalScreen[db.Project | None]):
 
 
 class EditProjectScreen(ModalScreen[db.Project | None]):
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def __init__(self, project: db.Project) -> None:
         super().__init__()
         self.project = project
@@ -140,6 +155,11 @@ class EditProjectScreen(ModalScreen[db.Project | None]):
 
 
 class NewSubtaskScreen(ModalScreen[db.Subtask | None]):
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def __init__(self, project: db.Project) -> None:
         super().__init__()
         self.project = project
@@ -179,6 +199,11 @@ class NewSubtaskScreen(ModalScreen[db.Subtask | None]):
 
 
 class EditSubtaskScreen(ModalScreen[db.Subtask | None]):
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def __init__(self, subtask: db.Subtask) -> None:
         super().__init__()
         self.subtask = subtask
@@ -229,6 +254,11 @@ class EditSubtaskScreen(ModalScreen[db.Subtask | None]):
 class EditEntryScreen(ModalScreen[tuple[str, str] | None]):
     """Returns (start_text, end_text); blank text means "leave unchanged"."""
 
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
     def __init__(self, entry: db.TimeEntry) -> None:
         super().__init__()
         self.entry = entry
@@ -264,6 +294,11 @@ class AddEntryScreen(ModalScreen[bool]):
 
     Mirrors `tt add`. Dismisses with True if an entry was created.
     """
+
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
