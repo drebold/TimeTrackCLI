@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from textual import on
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -30,7 +30,12 @@ from textual.widgets import (
 )
 
 from time_tracker_app import db
-from time_tracker_app.cli import _copy_to_clipboard, _day_header, _format_hours
+from time_tracker_app.cli import (
+    _compute_overlap_resolution,
+    _copy_to_clipboard,
+    _day_header,
+    _format_hours,
+)
 from time_tracker_app.timeparse import TimeParseError, parse_time_input
 
 NEW_PROJECT = "__new_project__"
@@ -370,7 +375,8 @@ class AddEntryScreen(ModalScreen[bool]):
         self._reload_subtasks(self.selected_project.id, select_id=subtask.id)
 
     @on(Button.Pressed, "#add")
-    def add_entry(self) -> None:
+    @work
+    async def add_entry(self) -> None:
         conn = self.app.conn  # type: ignore[attr-defined]
         error = self.query_one("#entry-error-label", Label)
         subtask_select = self.query_one("#entry-subtask-select", Select)
@@ -400,16 +406,91 @@ class AddEntryScreen(ModalScreen[bool]):
             start_dt = start_dt.replace(year=day.year, month=day.month, day=day.day)
             end_dt = end_dt.replace(year=day.year, month=day.month, day=day.day)
 
-        try:
-            db.add_entry(conn, subtask_id, start_dt, end_dt)
-        except (db.EditError, db.OverlapError) as e:
-            error.update(str(e))
-            return
+        while True:
+            try:
+                db.add_entry(conn, subtask_id, start_dt, end_dt)
+                break
+            except db.EditError as e:
+                error.update(str(e))
+                return
+            except db.OverlapError as e:
+                resolved = await self.app.push_screen_wait(OverlapResolveScreen(e))  # type: ignore[attr-defined]
+                if resolved is None:
+                    error.update("Cancelled")
+                    return
+                start_dt, end_dt = resolved
         self.dismiss(True)
 
     @on(Button.Pressed, "#cancel")
     def cancel(self) -> None:
         self.dismiss(False)
+
+
+class OverlapResolveScreen(ModalScreen[tuple[datetime, "datetime | None"] | None]):
+    """Shows an overlap conflict and offers to trim it or clip the new time to
+    fit, mirroring the CLI's `_resolve_overlap` - same geometry, computed by
+    the same shared `cli._compute_overlap_resolution`, just presented as
+    buttons instead of a numbered prompt.
+
+    Returns the (start, end) to retry the original action with (unchanged if
+    the conflict was trimmed, adjusted if the new time was clipped instead),
+    or None if cancelled.
+    """
+
+    BINDINGS = [Binding("escape", "cancel_dialog", "Cancel")]
+
+    def action_cancel_dialog(self) -> None:
+        self.cancel()
+
+    def __init__(self, error: db.OverlapError, subject_entry_id: int | None = None) -> None:
+        super().__init__()
+        self.error = error
+        self.subject_entry_id = subject_entry_id
+        self.resolution = _compute_overlap_resolution(error)
+
+    def compose(self) -> ComposeResult:
+        conflict = self.resolution.conflict
+        with Vertical(id="dialog"):
+            yield Label(
+                f"Overlaps entry {conflict.id} "
+                f"({conflict.started_at} -> {conflict.ended_at or 'running'})",
+                id="dialog-message",
+            )
+            if self.resolution.explanation:
+                yield Label(self.resolution.explanation, id="overlap-explanation")
+            yield Label("", id="entry-error-label")
+            with Vertical(id="overlap-buttons"):
+                if self.resolution.trim_label:
+                    yield Button(self.resolution.trim_label, id="trim", variant="warning")
+                if self.resolution.clip_label:
+                    yield Button(self.resolution.clip_label, id="clip", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    @on(Button.Pressed, "#trim")
+    def trim(self) -> None:
+        conn = self.app.conn  # type: ignore[attr-defined]
+        conflict = self.resolution.conflict
+        try:
+            db.update_entry(
+                conn,
+                conflict.id,
+                extra_exclude_entry_id=self.subject_entry_id,
+                **self.resolution.trim_kwargs,
+            )
+        except (db.EditError, db.OverlapError) as e:
+            self.query_one("#entry-error-label", Label).update(
+                f"Error trimming entry {conflict.id}: {e}"
+            )
+            return
+        self.dismiss((self.error.requested_start, self.error.requested_end))
+
+    @on(Button.Pressed, "#clip")
+    def clip(self) -> None:
+        self.dismiss(self.resolution.clip_range)
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self) -> None:
+        self.dismiss(None)
 
 
 # -- main app ---------------------------------------------------------------
@@ -635,27 +716,51 @@ class TimeTrackerTUI(App):
     # -- Timer tab: start / stop ---------------------------------------------
 
     @on(Button.Pressed, "#start-btn")
-    def on_start_pressed(self) -> None:
+    @work
+    async def on_start_pressed(self) -> None:
         subtask_select = self.query_one("#subtask-select", Select)
         subtask_id = subtask_select.value
         if subtask_id is Select.NULL or subtask_id == NEW_SUBTASK:
             return
-        try:
-            db.start_timer(self.conn, subtask_id, datetime.now())
-        except db.OverlapError as e:
-            self._show_error(str(e))
-            return
+        # Truncate to whole seconds: db.format_dt drops microseconds when
+        # persisting, so a raw datetime.now() here would stop matching itself
+        # after a trim-and-retry round-trips it through storage (the trimmed
+        # DB value ends up a fraction of a second earlier, which then reads
+        # as a fresh overlap).
+        at = datetime.now().replace(microsecond=0)
+        while True:
+            try:
+                db.start_timer(self.conn, subtask_id, at)
+                break
+            except db.OverlapError as e:
+                resolved = await self.push_screen_wait(OverlapResolveScreen(e))
+                if resolved is None:
+                    self._show_error("Cancelled")
+                    return
+                at, _ = resolved
         self._show_error("")
         self.refresh_status()
         self.refresh_entries()
 
     @on(Button.Pressed, "#stop-btn")
-    def on_stop_pressed(self) -> None:
-        try:
-            db.stop_timer(self.conn, datetime.now())
-        except db.OverlapError as e:
-            self._show_error(str(e))
-            return
+    @work
+    async def on_stop_pressed(self) -> None:
+        # See on_start_pressed's comment: whole seconds, to match what
+        # format_dt persists so a trim-and-retry doesn't see a false overlap.
+        at = datetime.now().replace(microsecond=0)
+        running = db.get_running_entry(self.conn)
+        while True:
+            try:
+                db.stop_timer(self.conn, at)
+                break
+            except db.OverlapError as e:
+                resolved = await self.push_screen_wait(
+                    OverlapResolveScreen(e, subject_entry_id=running.id if running else None)
+                )
+                if resolved is None:
+                    self._show_error("Cancelled")
+                    return
+                _, at = resolved
         self._show_error("")
         self.refresh_status()
         self.refresh_entries()
@@ -714,7 +819,7 @@ class TimeTrackerTUI(App):
 
         self.push_screen(ConfirmScreen(message), handle)
 
-    def _edit_selected_time_entry(self) -> None:
+    async def _edit_selected_time_entry(self) -> None:
         entry_id = self._selected_entry_id()
         if entry_id is None:
             return
@@ -722,27 +827,36 @@ class TimeTrackerTUI(App):
         if entry is None:
             return
 
-        def handle(result: tuple[str, str] | None) -> None:
-            if result is None:
-                return
-            start_raw, end_raw = result
-            now = datetime.now()
-            try:
-                start_dt = parse_time_input(start_raw, now) if start_raw else None
-                end_dt = parse_time_input(end_raw, now) if end_raw else None
-            except TimeParseError as e:
-                self._show_error(str(e))
-                return
+        result = await self.push_screen_wait(EditEntryScreen(entry))
+        if result is None:
+            return
+        start_raw, end_raw = result
+        now = datetime.now()
+        try:
+            start_dt = parse_time_input(start_raw, now) if start_raw else None
+            end_dt = parse_time_input(end_raw, now) if end_raw else None
+        except TimeParseError as e:
+            self._show_error(str(e))
+            return
+
+        while True:
             try:
                 db.update_entry(self.conn, entry_id, start=start_dt, end=end_dt)
-            except (db.EditError, db.OverlapError) as e:
+                break
+            except db.EditError as e:
                 self._show_error(str(e))
                 return
-            self._show_error("")
-            self.refresh_status()
-            self.refresh_entries()
-
-        self.push_screen(EditEntryScreen(entry), handle)
+            except db.OverlapError as e:
+                resolved = await self.push_screen_wait(
+                    OverlapResolveScreen(e, subject_entry_id=entry_id)
+                )
+                if resolved is None:
+                    self._show_error("Cancelled")
+                    return
+                start_dt, end_dt = resolved
+        self._show_error("")
+        self.refresh_status()
+        self.refresh_entries()
 
     # -- Projects tab -----------------------------------------------------
 
@@ -969,10 +1083,11 @@ class TimeTrackerTUI(App):
         elif tabs.active == "tab-projects":
             self._delete_selected_project()
 
-    def action_edit_selected(self) -> None:
+    @work
+    async def action_edit_selected(self) -> None:
         tabs = self.query_one(TabbedContent)
         if tabs.active == "tab-timer":
-            self._edit_selected_time_entry()
+            await self._edit_selected_time_entry()
         elif tabs.active == "tab-projects":
             if self.focused is self.query_one("#subtasks-table"):
                 self._edit_selected_subtask()

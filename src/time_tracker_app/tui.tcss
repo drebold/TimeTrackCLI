@@ -158,3 +158,18 @@ ModalScreen {
 #dialog-buttons Button {
     margin-left: 1;
 }
+
+#overlap-explanation {
+    color: $warning;
+    padding-bottom: 1;
+}
+
+#overlap-buttons {
+    height: auto;
+    margin-top: 1;
+}
+
+#overlap-buttons Button {
+    width: 1fr;
+    margin-bottom: 1;
+}

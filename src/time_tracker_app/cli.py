@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 import typer
@@ -78,6 +79,97 @@ def _get_or_create_subtask(conn, project_id: int, project_name: str, name: str) 
     )
 
 
+@dataclass
+class OverlapResolution:
+    """Pure geometry computation shared by the CLI's prompt-based resolver
+    (`_resolve_overlap` below) and the TUI's button-based one
+    (`tui.OverlapResolveScreen`) - given an OverlapError, works out what
+    "trim the conflict" and "clip my new time" would each mean, and whether
+    either is even possible for this particular overlap geometry.
+
+    `trim_kwargs`/`clip_range` are None when that choice isn't offered (e.g.
+    trimming can't resolve a fully-swallowed conflict without invalidating
+    it), matched by `trim_label`/`clip_label` also being None.
+    """
+
+    conflict: "db.TimeEntry"
+    explanation: str | None
+    trim_kwargs: dict[str, datetime] | None
+    trim_label: str | None
+    clip_range: tuple[datetime, datetime | None] | None
+    clip_label: str | None
+
+
+def _compute_overlap_resolution(error: db.OverlapError) -> OverlapResolution:
+    conflict = error.conflict
+    requested_start = error.requested_start
+    requested_end = error.requested_end
+    conflict_start = db.parse_dt(conflict.started_at)
+    conflict_end = db.parse_dt(conflict.ended_at) if conflict.ended_at is not None else datetime.now()
+
+    # Overlaps are always same-day (find_overlapping_entry scopes to one
+    # calendar day), so HH:MM is unambiguous and much easier to read than a
+    # full ISO datetime in these option labels.
+    def hm(dt: datetime) -> str:
+        return dt.strftime("%H:%M")
+
+    nested = (
+        requested_end is not None
+        and conflict_start <= requested_start
+        and requested_end <= conflict_end
+    )
+    swallow = (
+        requested_end is not None
+        and requested_start <= conflict_start
+        and requested_end >= conflict_end
+    )
+    new_starts_inside_conflict = conflict_start <= requested_start < conflict_end
+
+    if nested:
+        return OverlapResolution(
+            conflict=conflict,
+            explanation=(
+                f"Your requested time falls entirely inside entry {conflict.id} - there's no way "
+                f"to trim or clip around it. Edit or delete entry {conflict.id} first if you want "
+                f"to replace it."
+            ),
+            trim_kwargs=None,
+            trim_label=None,
+            clip_range=None,
+            clip_label=None,
+        )
+    if swallow:
+        return OverlapResolution(
+            conflict=conflict,
+            explanation=(
+                f"Your requested time fully covers entry {conflict.id} - trimming isn't possible "
+                f"without invalidating it. Use `tt delete {conflict.id}` first if you want to "
+                f"replace it."
+            ),
+            trim_kwargs=None,
+            trim_label=None,
+            clip_range=(requested_start, conflict_start),
+            clip_label=f"End your entry at {hm(conflict_start)} instead",
+        )
+    if new_starts_inside_conflict:
+        return OverlapResolution(
+            conflict=conflict,
+            explanation=None,
+            trim_kwargs={"end": requested_start},
+            trim_label=f"Trim entry {conflict.id} to end at {hm(requested_start)}",
+            clip_range=(conflict_end, requested_end),
+            clip_label=f"Start your entry at {hm(conflict_end)} instead",
+        )
+    return OverlapResolution(
+        conflict=conflict,
+        explanation=None,
+        trim_kwargs={"start": requested_end},
+        trim_label=f"Trim entry {conflict.id} to start at {hm(requested_end)}",
+        clip_range=(requested_start, conflict_start),
+        clip_label=f"End your entry at {hm(conflict_start)} instead",
+    )
+
+
 def _resolve_overlap(
     conn, error: db.OverlapError, subject_entry_id: int | None = None
 ) -> tuple[datetime, datetime | None] | None:
@@ -96,71 +188,41 @@ def _resolve_overlap(
     can spuriously conflict with itself. None for start/add, which don't have
     an existing row yet.
     """
-    conflict = error.conflict
     requested_start = error.requested_start
     requested_end = error.requested_end
-    conflict_start = db.parse_dt(conflict.started_at)
-    conflict_end = db.parse_dt(conflict.ended_at) if conflict.ended_at is not None else datetime.now()
+    resolution = _compute_overlap_resolution(error)
+    conflict = resolution.conflict
 
     typer.echo(
         f"Overlaps entry {conflict.id} ({conflict.started_at} -> {conflict.ended_at or 'running'})"
     )
+    if resolution.explanation:
+        typer.echo(resolution.explanation)
 
-    nested = (
-        requested_end is not None
-        and conflict_start <= requested_start
-        and requested_end <= conflict_end
-    )
-    swallow = (
-        requested_end is not None
-        and requested_start <= conflict_start
-        and requested_end >= conflict_end
-    )
-    new_starts_inside_conflict = conflict_start <= requested_start < conflict_end
-
-    trim_kwargs: dict[str, datetime] | None = None
-    clip_start, clip_end = requested_start, requested_end
     options: dict[str, str] = {}
-
-    if nested:
-        typer.echo(
-            f"Your requested time falls entirely inside entry {conflict.id} - there's no way to "
-            f"trim or clip around it. Edit or delete entry {conflict.id} first if you want to replace it."
-        )
-    elif swallow:
-        typer.echo(
-            f"Your requested time fully covers entry {conflict.id} - trimming isn't possible "
-            f"without invalidating it. Use `tt delete {conflict.id}` first if you want to replace it."
-        )
-        clip_end = conflict_start
-        options["2"] = f"End your entry at {db.format_dt(conflict_start)} instead"
-    elif new_starts_inside_conflict:
-        trim_kwargs = {"end": requested_start}
-        clip_start = conflict_end
-        options["1"] = f"Trim entry {conflict.id} to end at {db.format_dt(requested_start)}"
-        options["2"] = f"Start your entry at {db.format_dt(conflict_end)} instead"
-    else:
-        trim_kwargs = {"start": requested_end}
-        clip_end = conflict_start
-        options["1"] = f"Trim entry {conflict.id} to start at {db.format_dt(requested_end)}"
-        options["2"] = f"End your entry at {db.format_dt(conflict_start)} instead"
-
+    if resolution.trim_label:
+        options["1"] = resolution.trim_label
+    if resolution.clip_label:
+        options["2"] = resolution.clip_label
     options["3"] = "Cancel"
     for key, desc in options.items():
         typer.echo(f"  [{key}] {desc}")
     choice = typer.prompt("Choice", default="3")
 
-    if choice == "1" and trim_kwargs is not None:
+    if choice == "1" and resolution.trim_kwargs is not None:
         try:
             db.update_entry(
-                conn, conflict.id, extra_exclude_entry_id=subject_entry_id, **trim_kwargs
+                conn,
+                conflict.id,
+                extra_exclude_entry_id=subject_entry_id,
+                **resolution.trim_kwargs,
             )
         except (db.EditError, db.OverlapError) as e:
             typer.echo(f"Error trimming entry {conflict.id}: {e}")
             return None
         return requested_start, requested_end
-    if choice == "2" and "2" in options:
-        return clip_start, clip_end
+    if choice == "2" and resolution.clip_range is not None:
+        return resolution.clip_range
     return None
 
 
@@ -258,7 +320,12 @@ def start(
 ) -> None:
     """Start the timer on a subtask, creating project/subtask if confirmed."""
     conn = db.get_connection(db.get_db_path())
-    now = datetime.now()
+    # Whole seconds: db.format_dt drops microseconds when persisting, so a
+    # raw datetime.now() here would stop matching itself after a
+    # trim-and-retry round-trips it through storage (the trimmed DB value
+    # ends up a fraction of a second earlier, which then reads as a fresh
+    # overlap).
+    now = datetime.now().replace(microsecond=0)
     if at is not None:
         try:
             start_time = parse_time_input(at, now)
@@ -294,7 +361,8 @@ def start(
 def stop(at: str = typer.Option(None, "--at", help="Backdate the stop time, e.g. '14:30'")) -> None:
     """Stop the running timer."""
     conn = db.get_connection(db.get_db_path())
-    now = datetime.now()
+    # See `start`'s comment: whole seconds, to match what format_dt persists.
+    now = datetime.now().replace(microsecond=0)
     if at is not None:
         try:
             stop_time = parse_time_input(at, now)
