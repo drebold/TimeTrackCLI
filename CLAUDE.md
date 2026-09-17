@@ -18,7 +18,7 @@ A time-stamping app for tracking work.
 - Python + [Typer](https://typer.tiangolo.com/) for the CLI, stdlib `sqlite3` for storage, no ORM.
 - [Textual](https://textual.textualize.io/) powers the `tt tui` interactive UI (`tui.py` + `tui.tcss`) — it calls into `db.py` directly, same as the CLI, not through `cli.py`/subprocess, so there's one source of truth for business logic.
 - Package layout: `src/time_tracker_app/` (`db.py` schema/queries, `cli.py` CLI commands, `tui.py`/`tui.tcss` Textual TUI, `models.py` dataclasses, `timeparse.py`), tests in `tests/` (pytest).
-- **`uv` is blocked by this machine's IT policy (Heimdal).** Use plain `venv` + `pip`: `.\.venv\Scripts\python.exe -m pytest`, `.\.venv\Scripts\python.exe -m pip install -e . pytest`. Don't reach for `uv` commands.
+- `uv` is no longer blocked by this machine's IT policy — it can be used for env/dependency management again.
 - The installed `tt.exe` console-script launcher is also blocked (unsigned generated exe). Run via `python -m time_tracker_app` instead, or use the `tt.cmd` wrapper at `C:\Users\dre\.local\bin\tt.cmd` (already on PATH) which shells out to the project's `.venv` python — that's what `tt <command>` resolves to in a real terminal.
 - See `docs/superpowers/specs/` and `docs/superpowers/plans/` for the original design/plan docs (historical — many features have been added since without updating them; the code and tests are the source of truth for current behavior).
 
